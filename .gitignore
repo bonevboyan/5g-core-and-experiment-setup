@@ -1,2 +1,4 @@
 data
 __pycache__
+kind/.dockerhub-auth
+kind/.kind-config.runtime.yaml
