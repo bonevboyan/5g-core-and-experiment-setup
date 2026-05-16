@@ -75,7 +75,11 @@ fi
 # ---------------------------------------------------------------------------
 ensure_portforward_prometheus
 ensure_portforward_jaeger
-ensure_portforward_loki
+# Always force a fresh Loki connection: reset_experiment_state restarts the
+# Loki statefulset before this script is invoked, which leaves the caller's
+# port-forward in a broken-but-still-bound state that ensure_portforward_loki
+# would silently reuse, causing every query to get Connection Refused.
+start_portforward monitoring svc/loki 3100 3100
 
 # Cleanup trap (common.sh already installed one for port-forwards; we add
 # stop_traffic in front of it via a new combined trap).
