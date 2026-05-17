@@ -2,3 +2,4 @@ data
 __pycache__
 kind/.dockerhub-auth
 kind/.kind-config.runtime.yaml
+analysis/RQ1/__pycache__
