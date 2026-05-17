@@ -6,11 +6,16 @@ Measure retained visibility for each reduction strategy.
 
 "Visibility" = ability to recover fault-related events after applying a strategy.
 
-Three complementary metrics per strategy:
+Four complementary metrics per strategy:
 
   fault_line_retention_pct
     Fraction of keyword-matched fault lines from the original that survive.
     Works for all scenarios; uses heuristic keywords (ERROR, CRITICAL, etc.).
+
+  novelty_retention_pct
+    Fraction of template-novelty anomalies that survive reduction.
+    A log line is a novelty anomaly when its template was never seen in the
+    steady-state baseline.
 
   fault_window_retention_pct
     Fraction of all log lines from the fault injection window (per timeline.json)
@@ -21,7 +26,7 @@ Three complementary metrics per strategy:
     Overall fraction of log lines retained regardless of content.
 
 For lossless strategies (LogShrink, Denum) the filtered_csv is absent; all
-three metrics are 100% by definition because the compressed artifact preserves
+metrics are 100% by definition because the compressed artifact preserves
 every byte of the original.
 """
 
@@ -29,15 +34,23 @@ import argparse
 import csv
 import json
 import re
+import sys
 from pathlib import Path
 
-ANSI_RE        = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfnihlp]')
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR.parent / "lib"))
+from measure_overhead import strip_ansi
 FAULT_LEVEL_RE = re.compile(r'\]\s+(ERROR|CRITICAL|FATAL):', re.IGNORECASE)
+
+OPEN5GS_LOW_LEVEL_RE = re.compile(r'\]\s*(DEBUG|INFO)\s*:', re.IGNORECASE)
 FAULT_KW_RE    = re.compile(
     r'\b(error|exception|refused|failed|fatal|oom|killed|crash|abort|'
     r'timeout|reject|unreachable|cannot|unable|denied|panic)\b',
     re.IGNORECASE,
 )
+
+EXCLUDE_APPS = {"mongodb", "beyla"}
+
 GO_LEVEL_RE = re.compile(r'(?:^|\s)level=(\w+)', re.IGNORECASE)
 
 _VAR_PATS_VIS = [
@@ -51,16 +64,17 @@ _VAR_PATS_VIS = [
 ]
 
 
-def strip_ansi(s: str) -> str:
-    return ANSI_RE.sub("", s)
-
-
 def is_fault_line(line: str) -> bool:
     line = strip_ansi(line)
     lm = GO_LEVEL_RE.search(line)
     if lm and lm.group(1).upper() in ("DEBUG", "INFO"):
         return False
-    return bool(FAULT_LEVEL_RE.search(line) or FAULT_KW_RE.search(line))
+
+    if FAULT_LEVEL_RE.search(line):
+        return True
+    if OPEN5GS_LOW_LEVEL_RE.search(line):
+        return False
+    return bool(FAULT_KW_RE.search(line))
 
 
 def make_template_vis(line: str) -> str:
@@ -70,12 +84,24 @@ def make_template_vis(line: str) -> str:
     return re.sub(r'(<\*>\s*)+', '<*> ', t).strip()
 
 
+def build_normal_templates(baseline_rows: list[dict]) -> set[str]:
+    """Return the set of templates observed in baseline (steady-state) data."""
+    return {make_template_vis(r["line"]) for r in baseline_rows}
+
+
+def novelty_anomalies(rows: list[dict], normal_templates: set[str]) -> list[dict]:
+    """Lines whose template was never seen in normal operation."""
+    return [r for r in rows if make_template_vis(r["line"]) not in normal_templates]
+
+
 def load_csv_rows(csv_path: Path) -> list[dict]:
-    """Load rows as {ts_ns, line} dicts."""
+    """Load corpus rows as {ts_ns, line} dicts, excluding non-corpus apps."""
     rows = []
     with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if row.get("app", "") in EXCLUDE_APPS:
+                continue
             rows.append({
                 "ts_ns": int(row.get("timestamp_ns", 0)),
                 "line":  strip_ansi(row.get("line", "")),
@@ -94,12 +120,14 @@ def measure_visibility(
     original_rows: list[dict],
     filtered_rows: list[dict] | None,
     timeline: dict | None,
+    normal_templates: set[str] | None = None,
 ) -> dict:
     """
     Compute visibility metrics.
 
     If filtered_rows is None (lossless), all original rows are treated as retained.
     If timeline is provided, also compute fault_window_retention_pct.
+    If normal_templates is provided, also compute novelty_retention_pct.
     """
     retained = filtered_rows if filtered_rows is not None else original_rows
 
@@ -127,9 +155,25 @@ def measure_visibility(
         "total_retention_pct":          round(total_ret, 2),
         "fault_line_retention_pct":     round(fault_ret, 2),
         "fault_template_retention_pct": round(tmpl_ret, 2),
-        "fault_visibility_pct":         round(fault_ret, 2),
+        "fault_visibility_pct":         round(tmpl_ret, 2),  # template-level: can the fault be detected?
+        "novelty_anomaly_count":        None,
+        "novelty_retention_pct":        None,
+        "novelty_false_negative_pct":   None,
         "fault_window_retention_pct":   None,
     }
+
+    if normal_templates is not None:
+        in_novel  = novelty_anomalies(original_rows, normal_templates)
+        out_novel = novelty_anomalies(retained,       normal_templates)
+        n_in  = len(in_novel)
+        n_out = len(out_novel)
+        if n_in > 0:
+            nov_ret = n_out / n_in * 100.0
+            result["novelty_anomaly_count"]      = n_in
+            result["novelty_retention_pct"]      = round(nov_ret, 2)
+            result["novelty_false_negative_pct"] = round(100.0 - nov_ret, 2)
+        else:
+            result["novelty_anomaly_count"] = 0
 
     if timeline is not None:
         try:
@@ -153,7 +197,9 @@ def measure_visibility(
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--original",          required=True,
-                    help="Path to all_logs.csv (baseline)")
+                    help="Path to all_logs.csv (scenario under test)")
+    ap.add_argument("--baseline",          default=None,
+                    help="Path to steady-state all_logs.csv; enables novelty anomaly detection")
     ap.add_argument("--timeline",          default=None,
                     help="Path to timeline.json for fault-window metric")
     ap.add_argument("--logshrink-dir",     default=None)
@@ -170,8 +216,22 @@ def main():
     original_rows = load_csv_rows(Path(args.original))
     timeline      = load_timeline(Path(args.timeline)) if args.timeline else None
 
+    normal_templates: set[str] | None = None
+    if args.baseline:
+        baseline_path = Path(args.baseline)
+        if baseline_path.exists():
+            baseline_rows    = load_csv_rows(baseline_path)
+            normal_templates = build_normal_templates(baseline_rows)
+            print(f"[visibility] baseline: {len(baseline_rows)} rows, "
+                  f"{len(normal_templates)} normal templates")
+        else:
+            print(f"[visibility] WARNING: baseline not found: {baseline_path}", file=sys.stderr)
+
     in_fault = sum(1 for r in original_rows if is_fault_line(r["line"]))
-    print(f"[visibility] original: {len(original_rows)} lines, {in_fault} fault lines")
+    in_novel = (len(novelty_anomalies(original_rows, normal_templates))
+                if normal_templates is not None else "n/a")
+    print(f"[visibility] original: {len(original_rows)} lines, "
+          f"{in_fault} keyword-fault lines, {in_novel} novelty-anomaly lines")
 
     results: dict = {"scenario": args.scenario, "strategies": {}}
 
@@ -179,7 +239,8 @@ def main():
                               ("denum",     args.denum_dir)]:
         if strat_dir is None:
             continue
-        results["strategies"][strat] = measure_visibility(original_rows, None, timeline)
+        results["strategies"][strat] = measure_visibility(
+            original_rows, None, timeline, normal_templates)
 
     for strat, strat_dir in [("salo",         args.salo_dir),
                               ("preprocessing", args.preprocessing_dir)]:
@@ -190,14 +251,17 @@ def main():
             print(f"  [{strat}] filtered.csv not found — skipping")
             continue
         filtered_rows = load_csv_rows(filtered_csv)
-        results["strategies"][strat] = measure_visibility(original_rows, filtered_rows, timeline)
+        results["strategies"][strat] = measure_visibility(
+            original_rows, filtered_rows, timeline, normal_templates)
 
     for strat, data in results["strategies"].items():
-        fv  = data.get("fault_visibility_pct", "?")
-        tr  = data.get("total_retention_pct", "?")
-        fwr = data.get("fault_window_retention_pct")
+        fv   = data.get("fault_visibility_pct", "?")
+        tr   = data.get("total_retention_pct", "?")
+        nov  = data.get("novelty_retention_pct")
+        fwr  = data.get("fault_window_retention_pct")
+        nov_str = f"  novelty_ret={nov}%" if nov is not None else ""
         fwr_str = f"  fault_window={fwr}%" if fwr is not None else ""
-        print(f"  [{strat}] fault_visibility={fv}%  total_retention={tr}%{fwr_str}")
+        print(f"  [{strat}] fault_visibility={fv}%  total_retention={tr}%{nov_str}{fwr_str}")
 
     metrics_path = out_dir / "visibility_metrics.json"
     with open(metrics_path, "w") as f:

@@ -7,10 +7,26 @@ Used by all strategy apply.py scripts.
 """
 
 import os
+import re
 import resource
 import threading
 import time
 from pathlib import Path
+
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfnihlp]')
+
+
+def strip_ansi(s: str) -> str:
+    return ANSI_RE.sub("", s)
+
+
+def count_lines(path: Path) -> int:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return sum(1 for _ in f)
+
+
+def dir_bytes(path: Path) -> int:
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
 
 class ResourceTracker:
@@ -70,6 +86,11 @@ class ResourceTracker:
 
         scale = 1024 if os.uname().sysname == "Linux" else 1
         self.peak_mem_mb = self._peak_rss * scale / (1024 ** 2)
+
+        child_rss_delta = ru1_children.ru_maxrss - self._ru0_children.ru_maxrss
+        if child_rss_delta > 0:
+            child_mem_mb = child_rss_delta * scale / (1024 ** 2)
+            self.peak_mem_mb = max(self.peak_mem_mb, child_mem_mb)
 
     def to_dict(self) -> dict:
         return {

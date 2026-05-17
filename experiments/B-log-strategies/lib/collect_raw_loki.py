@@ -8,22 +8,18 @@ Collect ALL logs from the open5gs namespace via Loki HTTP API
 import argparse
 import csv
 import json
-import re
 import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfnihlp]')
-LIMIT = 5000        
+from measure_overhead import ResourceTracker, strip_ansi
+
+LIMIT = 5000
 QUERY = '{namespace="open5gs"}'
 OUT_FILE = "all_logs.csv"
 FIELDNAMES = ["timestamp_ns", "pod", "container", "app", "line"]
-
-
-def strip_ansi(text: str) -> str:
-    return ANSI_RE.sub("", text)
 
 
 def query_range(url: str, query: str, start_ns: int, end_ns: int, limit: int) -> dict:
@@ -124,8 +120,23 @@ def main():
     end_ns   = args.end   * 1_000_000_000
 
     print(f"[collect_raw_loki] window: {args.start} → {args.end} ({args.end - args.start}s)")
-    rows = collect_paginated(args.url, start_ns, end_ns)
-    write_csv(rows, out_dir / OUT_FILE)
+
+    with ResourceTracker() as rt:
+        rows = collect_paginated(args.url, start_ns, end_ns)
+
+    csv_path = out_dir / OUT_FILE
+    write_csv(rows, csv_path)
+
+    overhead = {
+        "rows_collected":    len(rows),
+        "output_bytes":      csv_path.stat().st_size,
+        "throughput_rows_s": round(len(rows) / rt.wall_s, 1) if rt.wall_s > 0 else 0,
+        **rt.to_dict(),
+    }
+    overhead_path = out_dir / "collection_overhead.json"
+    with open(overhead_path, "w") as f:
+        json.dump(overhead, f, indent=2)
+    print(f"[collect_raw_loki] overhead → {overhead_path}")
 
 
 if __name__ == "__main__":

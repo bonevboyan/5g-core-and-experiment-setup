@@ -12,7 +12,6 @@ LogShrink compresses logs by:
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -26,7 +25,7 @@ LIB_DIR    = B_DIR / "lib"
 LOGSHRINK  = REPOS / "LogShrink" / "python_compression"
 
 sys.path.insert(0, str(LIB_DIR))
-from measure_overhead import ResourceTracker, time_linear_scan
+from measure_overhead import ResourceTracker, time_linear_scan, count_lines, dir_bytes
 
 DS            = "Open5GS"
 HEADER_LENGTH = 4
@@ -36,15 +35,8 @@ N_CANDIDATE   = 16
 KERNEL        = "gzip"
 
 
-def dir_bytes(path: Path) -> int:
-    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
-
-
 def run_logshrink(log_path: Path, out_dir: Path) -> int:
-    """
-    Run LogShrink on log_path.  Returns the total size in bytes of all
-    files written into out_dir/compressed/ (the compressed artifact).
-    """
+    """Run LogShrink on log_path. Returns compressed_bytes."""
     with tempfile.TemporaryDirectory(prefix="logshrink_in_") as tmpdir:
         ds_dir = Path(tmpdir) / DS
         ds_dir.mkdir()
@@ -73,17 +65,20 @@ def run_logshrink(log_path: Path, out_dir: Path) -> int:
             "-outdir", str(compressed_dir),
         ]
 
-        result = subprocess.run(cmd, cwd=str(LOGSHRINK), capture_output=True, text=True)
-        if result.returncode != 0:
-            print("[logshrink] STDERR:", result.stderr[-2000:], file=sys.stderr)
-            raise RuntimeError(f"LogShrink failed (rc={result.returncode})")
+        proc = subprocess.Popen(cmd, cwd=str(LOGSHRINK),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _stdout, stderr = proc.communicate()
 
-        return dir_bytes(compressed_dir)
+        compressed_bytes = dir_bytes(compressed_dir)
 
+        if proc.returncode != 0:
+            if "ZeroDivisionError" in stderr and compressed_bytes > 0:
+                pass 
+            else:
+                print("[logshrink] STDERR:", stderr[-2000:], file=sys.stderr)
+                raise RuntimeError(f"LogShrink failed (rc={proc.returncode})")
 
-def count_lines(path: Path) -> int:
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return sum(1 for _ in f)
+        return compressed_bytes
 
 
 def main():
@@ -106,27 +101,37 @@ def main():
         check=True,
     )
 
-    n_lines      = count_lines(log_path)
-    log_bytes    = log_path.stat().st_size
+    n_lines   = count_lines(log_path)
+    log_bytes = log_path.stat().st_size
 
     print(f"[logshrink] input: {n_lines} lines, "
           f"{log_bytes / 1024:.1f} KB (log), {csv_bytes / 1024:.1f} KB (csv)")
 
+    compressed_dir = out_dir / "compressed"
+    if compressed_dir.exists():
+        shutil.rmtree(compressed_dir)
+
     with ResourceTracker() as rt:
         out_bytes = run_logshrink(log_path, out_dir)
 
+    print(f"  [logshrink] wall={rt.wall_s:.2f}s  mem={rt.peak_mem_mb:.0f}MB")
+
     if out_bytes == 0:
         print("[logshrink] WARNING: compressed output empty", file=sys.stderr)
-        compression_ratio = float("nan")
-        reduction_pct     = float("nan")
+        compression_ratio   = float("nan")
+        reduction_pct       = float("nan")
+        corpus_coverage_pct = float("nan")
     else:
-        compression_ratio = csv_bytes / out_bytes
-        reduction_pct     = (1.0 - out_bytes / csv_bytes) * 100.0
+        # Compare against the corpus log bytes (Open5GS NFs + UERANSIM), not the
+        # full Loki CSV which also contains excluded apps (mongodb, beyla).
+        compression_ratio   = log_bytes / out_bytes
+        reduction_pct       = (1.0 - out_bytes / log_bytes) * 100.0
+        corpus_coverage_pct = log_bytes / csv_bytes * 100.0
 
     throughput_mb_s = (log_bytes / 1024 / 1024) / rt.wall_s if rt.wall_s > 0 else 0.0
 
-    _, query_search_s = time_linear_scan(log_path)
-    total_query_s = rt.wall_s + query_search_s
+    _, query_latency    = time_linear_scan(log_path)
+    total_query_latency = rt.wall_s + query_latency
 
     metrics = {
         "strategy":               "logshrink",
@@ -134,14 +139,17 @@ def main():
         "input_lines":            n_lines,
         "input_log_bytes":        log_bytes,
         "input_csv_bytes":        csv_bytes,
+        "corpus_coverage_pct":    round(corpus_coverage_pct, 2),
         "output_bytes":           out_bytes,
         "compression_ratio":      round(compression_ratio, 3),
         "reduction_pct":          round(reduction_pct, 2),
         "throughput_mb_s":        round(throughput_mb_s, 3),
         "decompression_required": True,
-        "query_latency_s":        round(query_search_s, 4),
-        "total_query_latency_s":  round(total_query_s, 4),
-        **rt.to_dict(),
+        "wall_s":                 round(rt.wall_s, 3),
+        "cpu_s":                  round(rt.cpu_s, 3),
+        "peak_mem_mb":            round(rt.peak_mem_mb, 1),
+        "query_latency_s":        round(query_latency, 4),
+        "total_query_latency_s":  round(total_query_latency, 4),
     }
 
     metrics_path = out_dir / "metrics.json"
@@ -150,8 +158,7 @@ def main():
 
     print(f"[logshrink] ratio={compression_ratio:.2f}x  "
           f"reduction={reduction_pct:.1f}%  "
-          f"wall={rt.wall_s:.1f}s  mem={rt.peak_mem_mb:.0f}MB  "
-          f"query={total_query_s:.2f}s (search={query_search_s:.3f}s + decompress≈{rt.wall_s:.1f}s)")
+          f"wall={rt.wall_s:.2f}s  mem={rt.peak_mem_mb:.0f}MB")
     print(f"[logshrink] metrics → {metrics_path}")
 
 

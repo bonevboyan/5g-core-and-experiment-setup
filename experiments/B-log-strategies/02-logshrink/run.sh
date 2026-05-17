@@ -14,6 +14,14 @@ OUT_BASE="$DATA_DIR/B-log-strategies/02-logshrink"
 
 SCENARIOS=(steady bursty fault-pod-crash-amf fault-memory-pressure-upf fault-network-delay-nrf)
 
+PARSER_DIR="$SCRIPT_DIR/../cloned_repos/LogShrink/python_compression/parser"
+if [[ ! -x "$PARSER_DIR/THULR" ]]; then
+    echo "[logshrink] building THULR binary..."
+    command -v g++ >/dev/null 2>&1 || { echo "ERROR: g++ not found — install build-essential"; exit 1; }
+    make -C "$PARSER_DIR" --quiet
+    echo "[logshrink] THULR built OK"
+fi
+
 echo ""
 echo "============================================================"
 echo " B-02: LogShrink"

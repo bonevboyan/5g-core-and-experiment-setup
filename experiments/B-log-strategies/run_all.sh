@@ -26,6 +26,34 @@ COLLECT_EXTRA_ARGS=""
 if [[ "${1:-}" == "--from" && -n "${2:-}" ]]; then FROM="$2"; fi
 if [[ "${1:-}" == "--faults-only" ]]; then COLLECT_EXTRA_ARGS="--faults-only"; fi
 
+preflight() {
+    local ok=1
+
+    echo "[preflight] checking dependencies..."
+
+    # Python packages
+    for pkg in pandas numpy pyppmd regex; do
+        if ! python3 -c "import $pkg" 2>/dev/null; then
+            echo "  MISSING python package: $pkg  →  pip install $pkg"
+            ok=0
+        fi
+    done
+
+    # C++ compiler (needed to build LogShrink's THULR binary)
+    if ! command -v g++ >/dev/null 2>&1; then
+        echo "  MISSING g++  →  sudo apt install build-essential"
+        ok=0
+    fi
+
+    if [[ "$ok" -eq 0 ]]; then
+        echo "[preflight] fix the above and re-run."
+        exit 1
+    fi
+    echo "[preflight] all OK"
+}
+
+preflight
+
 run_phase() {
     local num="$1" name="$2" script="$3" extra="${4:-}"
     if [[ "$num" -lt "$FROM" ]]; then

@@ -33,21 +33,18 @@ B_DIR      = SCRIPT_DIR.parent
 LIB_DIR    = B_DIR / "lib"
 sys.path.insert(0, str(LIB_DIR))
 
-from measure_overhead import ResourceTracker, time_linear_scan
+from measure_overhead import ResourceTracker, time_linear_scan, strip_ansi
+from log_parse import LOG_RE, LEVEL_ORDER, make_template
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
 
 WINDOW_SECS          = 60   # seconds per health-assessment window
-ERROR_FLAG_THRESHOLD = 5   # ERROR events per window required to flag an NF
+ERROR_FLAG_THRESHOLD = 25   # ERROR events per window required to flag an NF
 LOOKFORWARD_WINDOWS  = 2    # extra windows kept flagged after error burst ends
 
-LEVEL_ORDER = {
-    "DEBUG": 0, "INFO": 1,
-    "WARNING": 2, "WARN": 2,
-    "ERROR": 3, "CRITICAL": 4, "FATAL": 4,
-}
+EXCLUDE_APPS = {"mongodb", "beyla"}
 
 CORE_NFS    = {"amf", "smf", "upf", "nrf"}
 SUPPORT_NFS = {"udm", "udr", "pcf", "ausf", "bsf", "nssf"}
@@ -63,30 +60,6 @@ TIER_THRESHOLD = {
 # Template appearing in fewer than this fraction of windows is treated as rare
 RARITY_THRESHOLD = 0.05
 
-ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfnihlp]')
-LOG_RE  = re.compile(
-    r'^(?P<date>\d{2}/\d{2})\s+'
-    r'(?P<time>\d{2}:\d{2}:\d{2}\.\d+):\s+'
-    r'\[(?P<component>[^\]]+)\]\s+'
-    r'(?P<level>\w+):\s*'
-    r'(?P<message>.*)',
-    re.DOTALL,
-)
-_VAR_PATS = [
-    re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE),
-    re.compile(r'\d+\.\d+\.\d+\.\d+(:\d+)?'),
-    re.compile(r'imsi-\S+'),
-    re.compile(r'suci-\S+'),
-    re.compile(r'\bsupi-\S+'),
-    re.compile(r'0x[0-9a-fA-F]+'),
-    re.compile(r'\b\d+\b'),
-]
-
-
-def strip_ansi(s: str) -> str:
-    return ANSI_RE.sub("", s)
-
-
 def location_tier(app: str) -> str:
     a = app.lower()
     if a in CORE_NFS:
@@ -96,13 +69,6 @@ def location_tier(app: str) -> str:
     if "mongo" in a or "db" in a:
         return "infrastructure"
     return "unknown"
-
-
-def make_template(msg: str) -> str:
-    t = msg
-    for pat in _VAR_PATS:
-        t = pat.sub("<*>", t)
-    return re.sub(r'(<\*>\s*)+', '<*> ', t).strip()
 
 
 def parse_row(row: dict) -> dict:
@@ -137,6 +103,8 @@ def load_csv(csv_path: Path) -> list[dict]:
     with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if row.get("app", "") in EXCLUDE_APPS:
+                continue
             rows.append(parse_row(row))
     return rows
 
@@ -152,7 +120,10 @@ def compute_rare_templates(rows: list[dict]) -> set:
     n = len(all_windows)
     if n == 0:
         return set()
-    return {t for t, wins in tmpl_windows.items() if len(wins) / n < RARITY_THRESHOLD}
+    max_windows = int(RARITY_THRESHOLD * n)
+    if max_windows == 0:
+        return set() 
+    return {t for t, wins in tmpl_windows.items() if len(wins) <= max_windows}
 
 
 def compute_flagged_windows(rows: list[dict]) -> set:
@@ -224,6 +195,8 @@ def main():
         flagged        = compute_flagged_windows(rows)
         kept           = apply_salo(rows, rare_templates, flagged)
 
+    print(f"  [salo] wall={rt.wall_s:.3f}s  mem={rt.peak_mem_mb:.0f}MB")
+
     in_lines  = len(rows)
     out_lines = len(kept)
 
@@ -234,7 +207,7 @@ def main():
     reduction_pct = (1.0 - out_lines / in_lines) * 100.0 if in_lines else 0.0
     storage_ratio = in_bytes / out_bytes if out_bytes else float("nan")
 
-    _, query_latency_s = time_linear_scan(filtered_path)
+    _, query_latency = time_linear_scan(filtered_path)
 
     metrics = {
         "strategy": "salo",
@@ -256,9 +229,11 @@ def main():
         "nf_flagged_windows":     len(flagged),
         "rare_templates_kept":    len(rare_templates),
         "decompression_required": False,
-        "query_latency_s":        round(query_latency_s, 4),
-        "total_query_latency_s":  round(query_latency_s, 4),
-        **rt.to_dict(),
+        "wall_s":                 round(rt.wall_s, 3),
+        "cpu_s":                  round(rt.cpu_s, 3),
+        "peak_mem_mb":            round(rt.peak_mem_mb, 1),
+        "query_latency_s":        round(query_latency, 4),
+        "total_query_latency_s":  round(query_latency, 4),
     }
 
     metrics_path = out_dir / "metrics.json"
@@ -267,8 +242,7 @@ def main():
 
     print(f"[salo] {in_lines} → {out_lines} lines  "
           f"reduction={reduction_pct:.1f}%  "
-          f"wall={rt.wall_s:.1f}s  mem={rt.peak_mem_mb:.0f}MB  "
-          f"query={query_latency_s:.3f}s")
+          f"wall={rt.wall_s:.3f}s  mem={rt.peak_mem_mb:.0f}MB")
     print(f"[salo] metrics → {metrics_path}")
 
 

@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../lib/common.sh"
 
 BASE="$DATA_DIR/B-log-strategies"
+BASELINE_CSV="$BASE/01-collect/steady/all_logs.csv"
 
 SCENARIOS=(steady bursty fault-pod-crash-amf fault-memory-pressure-upf fault-network-delay-nrf)
 
@@ -30,6 +31,7 @@ for scenario in "${SCENARIOS[@]}"; do
     SA_ARG=""
     PP_ARG=""
     TL_ARG=""
+    BL_ARG=""
 
     [[ -d "$BASE/02-logshrink/$scenario" ]]    && LS_ARG="--logshrink-dir     $BASE/02-logshrink/$scenario"
     [[ -d "$BASE/03-denum/$scenario" ]]         && DN_ARG="--denum-dir          $BASE/03-denum/$scenario"
@@ -39,11 +41,14 @@ for scenario in "${SCENARIOS[@]}"; do
     timeline="$BASE/01-collect/$scenario/timeline.json"
     [[ -f "$timeline" ]] && TL_ARG="--timeline $timeline"
 
+    # Novelty anomaly detection: use steady-state as the baseline.
+    [[ -f "$BASELINE_CSV" ]] && BL_ARG="--baseline $BASELINE_CSV"
+
     python3 "$SCRIPT_DIR/measure.py" \
         --original  "$csv" \
         --outdir    "$BASE/06-visibility/$scenario" \
         --scenario  "$scenario" \
-        $LS_ARG $DN_ARG $SA_ARG $PP_ARG $TL_ARG
+        $LS_ARG $DN_ARG $SA_ARG $PP_ARG $TL_ARG $BL_ARG
 done
 
 echo ""

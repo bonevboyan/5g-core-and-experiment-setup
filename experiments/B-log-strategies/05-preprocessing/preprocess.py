@@ -39,11 +39,14 @@ B_DIR      = SCRIPT_DIR.parent
 LIB_DIR    = B_DIR / "lib"
 sys.path.insert(0, str(LIB_DIR))
 
-from measure_overhead import ResourceTracker, time_linear_scan
+from measure_overhead import ResourceTracker, time_linear_scan, strip_ansi
+from log_parse import LOG_RE, LEVEL_ORDER, make_template
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
+
+EXCLUDE_APPS = {"mongodb", "beyla"}
 
 TEMPORAL_WINDOW_SECS   = 15     # window for temporal deduplication
 SPATIAL_WINDOW_SECS    = 15     # window for spatial deduplication
@@ -55,49 +58,6 @@ APRIORI_MAX_ITEMSET    = 2      # only mine pairs (sufficient for log causality)
 # ──────────────────────────────────────────────────────────────────────────────
 # Log parsing
 # ──────────────────────────────────────────────────────────────────────────────
-
-ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mABCDEFGHJKSTfnihlp]')
-LOG_RE  = re.compile(
-    r'^(?P<date>\d{2}/\d{2})\s+'
-    r'(?P<time>\d{2}:\d{2}:\d{2}\.\d+):\s+'
-    r'\[(?P<component>[^\]]+)\]\s+'
-    r'(?P<level>\w+):\s*'
-    r'(?P<message>.*)',
-    re.DOTALL,
-)
-
-# Tokens replaced when generating a template
-_VAR_PATS = [
-    re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
-               re.IGNORECASE),                              # UUID
-    re.compile(r'\d+\.\d+\.\d+\.\d+(:\d+)?'),              # IP(:port)
-    re.compile(r'0x[0-9a-fA-F]+'),                         # hex literal
-    re.compile(r'imsi-\S+'),                                # IMSI
-    re.compile(r'suci-\S+'),                                # SUCI
-    re.compile(r'\bsupi-\S+'),                              # SUPI
-    re.compile(r'\(\.\./[^)]+\)'),                          # (src/file.c:N)
-    re.compile(r'\b\d{2}/\d{2}\b'),                         # date MM/DD
-    re.compile(r'\d{2}:\d{2}:\d{2}\.\d+'),                 # time
-    re.compile(r'\b\d+\b'),                                 # standalone int
-]
-
-
-def strip_ansi(s: str) -> str:
-    return ANSI_RE.sub("", s)
-
-
-def make_template(message: str) -> str:
-    t = message
-    for pat in _VAR_PATS:
-        t = pat.sub("<*>", t)
-    # collapse multiple <*> into one to group near-identical messages
-    t = re.sub(r'(<\*>\s*)+', '<*> ', t).strip()
-    return t
-
-
-LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "WARN": 2,
-               "ERROR": 3, "CRITICAL": 4, "FATAL": 4}
-
 
 def parse_row(row: dict) -> dict:
     ts_ns  = int(row.get("timestamp_ns", 0))
@@ -282,12 +242,14 @@ def load_csv(csv_path: Path) -> list[dict]:
     with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if row.get("app", "") in EXCLUDE_APPS:
+                continue
             rows.append(parse_row(row))
     return rows
 
 
 def write_filtered_csv(rows: list[dict], out_path: Path):
-    fieldnames = ["timestamp_ns", "pod", "app", "template", "level", "line"]
+    fieldnames = ["timestamp_ns", "pod", "app", "line"]
     with open(out_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -296,8 +258,6 @@ def write_filtered_csv(rows: list[dict], out_path: Path):
                 "timestamp_ns": r["ts_ns"],
                 "pod":          r["pod"],
                 "app":          r["app"],
-                "template":     r["template"],
-                "level":        r["level"],
                 "line":         r["line"],
             })
 
@@ -318,11 +278,13 @@ def main():
 
     with ResourceTracker() as rt:
         rows = load_csv(csv_path)
+        in_lines = len(rows)
         rows = categorise(rows)
         rows = filter(rows)
         rows = causality(rows)
 
-    in_lines  = sum(1 for _ in open(csv_path, encoding="utf-8", errors="replace")) - 1
+    print(f"  [preprocessing] wall={rt.wall_s:.3f}s  mem={rt.peak_mem_mb:.0f}MB")
+
     out_lines = len(rows)
 
     filtered_path = out_dir / "filtered.csv"
@@ -332,17 +294,17 @@ def main():
     reduction_pct = (1.0 - out_lines / in_lines) * 100.0 if in_lines else 0.0
     storage_ratio = in_bytes / out_bytes if out_bytes else float("nan")
 
-    _, query_latency_s = time_linear_scan(filtered_path)
+    _, query_latency = time_linear_scan(filtered_path)
 
     metrics = {
-        "strategy":             "preprocessing",
-        "scenario":             args.scenario,
+        "strategy": "preprocessing",
+        "scenario": args.scenario,
         "config": {
-            "temporal_window_s":    TEMPORAL_WINDOW_SECS,
-            "spatial_window_s":     SPATIAL_WINDOW_SECS,
-            "apriori_window_s":     APRIORI_WINDOW_SECS,
-            "apriori_min_support":  APRIORI_MIN_SUPPORT,
-            "apriori_min_conf":     APRIORI_MIN_CONFIDENCE,
+            "temporal_window_s":   TEMPORAL_WINDOW_SECS,
+            "spatial_window_s":    SPATIAL_WINDOW_SECS,
+            "apriori_window_s":    APRIORI_WINDOW_SECS,
+            "apriori_min_support": APRIORI_MIN_SUPPORT,
+            "apriori_min_conf":    APRIORI_MIN_CONFIDENCE,
         },
         "input_lines":            in_lines,
         "output_lines":           out_lines,
@@ -351,9 +313,11 @@ def main():
         "reduction_pct":          round(reduction_pct, 2),
         "storage_ratio":          round(storage_ratio, 3),
         "decompression_required": False,
-        "query_latency_s":        round(query_latency_s, 4),
-        "total_query_latency_s":  round(query_latency_s, 4),
-        **rt.to_dict(),
+        "wall_s":                 round(rt.wall_s, 3),
+        "cpu_s":                  round(rt.cpu_s, 3),
+        "peak_mem_mb":            round(rt.peak_mem_mb, 1),
+        "query_latency_s":        round(query_latency, 4),
+        "total_query_latency_s":  round(query_latency, 4),
     }
 
     metrics_path = out_dir / "metrics.json"
@@ -362,8 +326,7 @@ def main():
 
     print(f"[preprocessing] {in_lines} → {out_lines} lines  "
           f"reduction={reduction_pct:.1f}%  "
-          f"wall={rt.wall_s:.1f}s  mem={rt.peak_mem_mb:.0f}MB  "
-          f"query={query_latency_s:.3f}s")
+          f"wall={rt.wall_s:.3f}s  mem={rt.peak_mem_mb:.0f}MB")
     print(f"[preprocessing] metrics → {metrics_path}")
 
 
