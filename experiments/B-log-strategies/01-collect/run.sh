@@ -2,16 +2,16 @@
 # B-log-strategies/01-collect/run.sh
 #
 # Collect raw Open5GS logs for each of five scenarios:
-#   steady               — 10 min, 50 UEs, no fault injection
-#   bursty               — 10 min, UE scale up/down cycles
-#   fault-pod-crash-amf  — Chaos Mesh 03 (2 min pre + 5 min fault + 2 min post)
-#   fault-memory-upf     — Chaos Mesh 02
-#   fault-network-nrf    — Chaos Mesh 09
+#   steady               — 10 min, 50 UEs, no fault injection   (live Loki query)
+#   bursty               — 10 min, UE scale up/down cycles       (live Loki query)
+#   fault-pod-crash-amf  — from data/C-fault-detection/03-pod-crash-amf
+#   fault-memory-upf     — from data/C-fault-detection/02-memory-pressure-upf
+#   fault-network-nrf    — from data/C-fault-detection/09-network-delay-nrf
+#
+# Fault scenarios reuse the ready-collected C-phase data
 #
 # Output:
 #   $DATA_DIR/B-log-strategies/01-collect/<scenario>/
-#
-# Estimated runtime: ~55 minutes 
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,9 +25,6 @@ OUT_BASE="$DATA_DIR/B-log-strategies/01-collect"
 UE_COUNT=50
 STEADY_DURATION=600    # 10 min
 BURSTY_DURATION=600    # 10 min
-PRE_DURATION=120       # 2 min pre-fault baseline
-FAULT_DURATION=300     # 5 min active fault window
-POST_DURATION=120      # 2 min post-fault recovery
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helper: collect raw Loki logs and write all_logs.csv to out_dir
@@ -43,8 +40,10 @@ collect_raw() {
         --out   "$out_dir"
 }
 
-check_cluster_ready
-ensure_portforward_loki
+if [[ "$FAULTS_ONLY" == false ]]; then
+    check_cluster_ready
+    ensure_portforward_loki
+fi
 
 echo ""
 echo "============================================================"
@@ -98,42 +97,61 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# run_fault.sh  + raw Loki overlay
+# Use pre-collected C-fault-detection data 
 # ──────────────────────────────────────────────────────────────────────────────
-run_fault_scenario() {
-    local fault_name="$1" manifest_file="$2"
+use_ready_fault_data() {
+    local fault_name="$1" c_fault_dir="$2"
+    local src="$REPO_ROOT/data/C-fault-detection/$c_fault_dir"
     local out_dir="$OUT_BASE/$fault_name"
 
     echo ""
-    echo "--- Fault scenario: $fault_name ---"
-    reset_experiment_state "B-collect-$fault_name" "$UE_COUNT"
-    scale_ues "$UE_COUNT"
-    wait_for_pods_stable open5gs 120
+    echo "--- Fault scenario: $fault_name (from ready data: $c_fault_dir) ---"
 
-    bash "$LIB_DIR/run_fault.sh" \
-        --name           "$fault_name" \
-        --manifest       "$CHAOS_DIR/$manifest_file" \
-        --out            "$out_dir" \
-        --pre-duration   "$PRE_DURATION" \
-        --fault-duration "$FAULT_DURATION" \
-        --post-duration  "$POST_DURATION" \
-        --step           "5s"
-
-    local timeline="$out_dir/timeline.json"
-    if [[ -f "$timeline" ]]; then
-        FULL_START=$(python3 -c \
-            "import json; d=json.load(open('$timeline')); print(d['pre']['start'])")
-        FULL_END=$(python3 -c \
-            "import json; d=json.load(open('$timeline')); print(d['post']['end'])")
-        collect_raw "$FULL_START" "$FULL_END" "$out_dir"
-    else
-        echo "[warn] timeline.json not found — skipping raw collection for $fault_name"
+    if [[ ! -d "$src" ]]; then
+        echo "[warn] C-fault-detection source not found: $src — skipping $fault_name"
+        return
     fi
+
+    mkdir -p "$out_dir"
+
+    cp "$src/timeline.json" "$out_dir/timeline.json"
+    echo "  [copy] timeline.json"
+
+    # Merge pre + during + post Loki CSVs into a single all_logs.csv.
+    python3 - "$src" "$out_dir/all_logs.csv" <<'PYEOF'
+import csv, sys
+from pathlib import Path
+
+src  = Path(sys.argv[1])
+dest = Path(sys.argv[2])
+
+phases = ["pre", "during", "post"]
+rows = []
+for phase in phases:
+    p = src / "loki" / phase / "all.csv"
+    if not p.exists():
+        print(f"  [warn] missing {p}", flush=True)
+        continue
+    with open(p, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+
+rows.sort(key=lambda r: int(r["timestamp_ns"]))
+
+fieldnames = ["timestamp_ns", "pod", "container", "app", "line"]
+with open(dest, "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+
+print(f"  [merge] {len(rows)} rows → {dest}", flush=True)
+PYEOF
 }
 
-run_fault_scenario "fault-pod-crash-amf"       "03-pod-crash-amf.yaml"
-run_fault_scenario "fault-memory-pressure-upf"  "02-memory-pressure-upf.yaml"
-run_fault_scenario "fault-network-delay-nrf"    "09-network-delay-nrf.yaml"
+use_ready_fault_data "fault-pod-crash-amf"       "03-pod-crash-amf"
+use_ready_fault_data "fault-memory-pressure-upf"  "02-memory-pressure-upf"
+use_ready_fault_data "fault-network-delay-nrf"    "09-network-delay-nrf"
 
 echo ""
 echo "============================================================"
