@@ -209,6 +209,25 @@ else
     [[ "$ue_ok" -eq 1 ]] || { echo "  [gate] FATAL — UEs never established ${UE_COUNT} PDU sessions" >&2; exit 1; }
   fi
 
+  # ── Gate C2: UPF session table sanity (orphaned-bearer early warning) ───────
+  # Gate C only checks the SMF side. The UPF does NOT expose pfcp_sessions_active
+  # (SMF-only); its only session metric is fivegs_upffunction_upf_sessionnbr,
+  # which over-counts (EXTENSIONS.md §10.10) — so an exact UPF==SMF check is not
+  # possible here. This is therefore a NON-FATAL best-effort nudge: if the UPF
+  # session table looks short, restart UEs once; never abort the run on it. The
+  # authoritative orphaned-bearer protection is the post-traffic Send-Error-
+  # Indication gate in run_fault.sh plus the tunnels>=10 health check.
+  if ! wait_for_metric upf fivegs_upffunction_upf_sessionnbr -ge "$UE_COUNT" 60 \
+       "UPF session table >= ${UE_COUNT}"; then
+    echo "  [gate] WARN — UPF session table short (one-shot UE restart, non-fatal)"
+    kubectl rollout restart deployment/ueransim-gnb-ues deployment/ueransim-ues -n open5gs
+    kubectl rollout status  deployment/ueransim-gnb-ues -n open5gs --timeout=120s || true
+    kubectl rollout status  deployment/ueransim-ues     -n open5gs --timeout=120s || true
+    wait_for_metric upf fivegs_upffunction_upf_sessionnbr -ge "$UE_COUNT" 60 \
+       "UPF session table >= ${UE_COUNT} (after restart)" || \
+       echo "  [gate] WARN — UPF still short; deferring to run_fault.sh data-plane gate"
+  fi
+
   helm install loki grafana/loki-stack \
     --namespace monitoring \
     --set promtail.enabled=true \

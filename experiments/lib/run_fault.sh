@@ -91,6 +91,66 @@ trap _run_fault_cleanup EXIT
 
 start_traffic
 
+# ---------------------------------------------------------------------------
+# Data-plane cleanliness gate (orphaned-bearer guard)
+# ---------------------------------------------------------------------------
+# cluster-start.sh gates the control plane (pods Ready, NFs registered,
+# pfcp_sessions_active>=10). It cannot see this failure: it runs before traffic
+# exists, and the symptom only appears once the ping loop hits a UE whose PDU
+# session was orphaned at bring-up (UPF floods 'Send Error Indication',
+# contaminating the PRE baseline — seen in 7/22 prior runs).
+#
+# A real orphaned bearer = ONE stuck session pinged at 5/s -> a sustained,
+# single-TEID flood (~100 SEI / 20s, all one TEID). Harmless churn (the 3-UE
+# re-registration loop, or a repair re-attach) = a brief burst spread across
+# several TEIDs. So "dirty" requires BOTH: total >= DP_FLOOD_MIN *and* one TEID
+# >= DP_FLOOD_FRAC of them. We do NOT repair pre-emptively (that itself causes
+# churn); only repair if a flood is seen, and let it settle before re-checking.
+DP_FLOOD_MIN=40       # sustained: >=2 SEI/s over the 20s window
+DP_FLOOD_FRAC=0.70    # single stuck session dominates
+UPF_POD=$(kubectl get pod -n open5gs -l app.kubernetes.io/name=upf \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+# prints "FLOOD <total> <topteid> <topcount>" or "OK <total>"; exit 0 always
+_dp_check() {
+    local lf
+    lf=$(mktemp)
+    kubectl logs -n open5gs "$UPF_POD" --since=20s > "$lf" 2>/dev/null
+    python3 - "$DP_FLOOD_MIN" "$DP_FLOOD_FRAC" "$lf" <<'PYEOF'
+import sys, re, collections
+mn, frac, path = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+teid = collections.Counter()
+for ln in open(path, errors="replace"):
+    if "Send Error Indication" in ln:
+        m = re.search(r"TEID:0x[0-9a-fA-F]+", ln)
+        teid[m.group(0) if m else "?"] += 1
+tot = sum(teid.values())
+top, topc = (teid.most_common(1)[0] if teid else ("-", 0))
+print(f"FLOOD {tot} {top} {topc}" if (tot >= mn and topc >= frac * tot)
+      else f"OK {tot}")
+PYEOF
+    rm -f "$lf"
+}
+
+DP_GATE_OK=0
+for attempt in 1 2 3; do
+    sleep 20
+    res=$(_dp_check)
+    if [[ "$res" == OK* ]]; then
+        echo "[gate] data plane clean ($res) — proceeding"
+        DP_GATE_OK=1; break
+    fi
+    echo "[gate] data plane dirty: $res (attempt $attempt/3) — repairing"
+    repair_orphaned_bearers || true
+    sleep 25   # let the re-attach churn drain before re-sampling
+done
+if [[ "$DP_GATE_OK" -ne 1 ]]; then
+    echo "FATAL: single-TEID SEI flood persists after 3 repair attempts;" \
+         "PRE baseline would be contaminated. Resume with --from N." >&2
+    exit 1
+fi
+echo "[gate] data plane clean — proceeding to PRE window"
+
 echo ""
 echo "--- Fault: $NAME ---"
 log_experiment_start "$NAME" "$OUT_DIR"
@@ -120,6 +180,30 @@ sleep_with_progress "$PRE_DURATION" "pre-fault baseline"
 PRE_END=$(now_ts)
 wait "$PRE_RTT_PID" 2>/dev/null || true
 collect_phase pre "$PRE_START" "$PRE_END"
+
+# Fail-safe: even past the gate, refuse a baseline saturated by a single
+# orphaned bearer (one TEID's 'Send Error Indication' > 30% of pre error lines).
+PRE_ERR="$OUT_DIR/loki/pre/errors.csv"
+if [[ -f "$PRE_ERR" ]] && ! python3 - "$PRE_ERR" <<'PYEOF'
+import csv, re, sys, collections
+rows = list(csv.reader(open(sys.argv[1], newline='')))
+body = rows[1:] if rows else []
+if not body:
+    sys.exit(0)
+teid = collections.Counter()
+for r in body:
+    line = r[-1] if r else ""
+    if "Send Error Indication" in line:
+        m = re.search(r"TEID:0x[0-9a-fA-F]+", line)
+        teid[m.group(0) if m else "?"] += 1
+top = max(teid.values()) if teid else 0
+sys.exit(1 if top > 0.30 * len(body) else 0)
+PYEOF
+then
+    echo "FATAL: PRE baseline contaminated by an orphaned-bearer SEI flood" \
+         "(single TEID > 30% of $PRE_ERR). Discard & resume with --from N." >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Inject fault
