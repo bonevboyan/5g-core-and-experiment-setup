@@ -43,6 +43,14 @@ collect_raw() {
 if [[ "$FAULTS_ONLY" == false ]]; then
     check_cluster_ready
     ensure_portforward_loki
+
+    # Disable Beyla during collection
+    echo "[setup] Disabling Beyla daemonset..."
+    kubectl patch daemonset beyla -n open5gs \
+        --type=json \
+        -p='[{"op":"add","path":"/spec/template/spec/nodeSelector","value":{"non-existing":"true"}}]' \
+        2>/dev/null || true
+    echo "[setup] Beyla disabled"
 fi
 
 echo ""
@@ -96,62 +104,56 @@ else
     echo "[skip] Steady and bursty scenarios (--faults-only)"
 fi
 
+if [[ "$FAULTS_ONLY" == false ]]; then
+    echo "[restore] Re-enabling Beyla daemonset..."
+    kubectl patch daemonset beyla -n open5gs \
+        --type=json \
+        -p='[{"op":"remove","path":"/spec/template/spec/nodeSelector/non-existing"}]' 2>/dev/null || true
+    kubectl rollout status daemonset/beyla -n open5gs --timeout=2m 2>/dev/null || true
+    echo "[restore] Beyla restored"
+fi
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Use pre-collected C-fault-detection data 
+# Use pre-collected C-fault-detection data
+#
+# NOTE — ground-truth asymmetry across strategy families:
+#   Offline strategies (LogShrink, Denum) are applied to this C-phase data.
+#   Streaming strategies (SALO, Preprocessing) run against their own fresh
+#   cluster runs executed in sidecar/run.sh Passes 2 and 3.
+#   This does not affect visibility comparisons because lossless strategies
+#   always report 100% retention regardless of which run is used, and each
+#   streaming strategy is always measured against its own simultaneous
+#   ground-truth capture.  The paper's Methodology section should note the
+#   two-source design to be transparent.
 # ──────────────────────────────────────────────────────────────────────────────
-use_ready_fault_data() {
-    local fault_name="$1" c_fault_dir="$2"
-    local src="$REPO_ROOT/data/C-fault-detection/$c_fault_dir"
-    local out_dir="$OUT_BASE/$fault_name"
+derive_fault_from_C() {
+    local b_name="$1" c_name="$2"
+    local c_dir="$REPO_ROOT/data/C-fault-detection/$c_name"
+    local out_dir="$OUT_BASE/$b_name"
 
     echo ""
-    echo "--- Fault scenario: $fault_name (from ready data: $c_fault_dir) ---"
+    echo "--- Fault scenario: $b_name (from C: $c_name) ---"
 
-    if [[ ! -d "$src" ]]; then
-        echo "[warn] C-fault-detection source not found: $src — skipping $fault_name"
-        return
+    if [[ ! -d "$c_dir" ]]; then
+        echo "[error] C output not found: $c_dir" >&2
+        exit 1
     fi
 
     mkdir -p "$out_dir"
 
-    cp "$src/timeline.json" "$out_dir/timeline.json"
-    echo "  [copy] timeline.json"
+    { cat "$c_dir/loki/pre/all.csv"
+      tail -n +2 "$c_dir/loki/during/all.csv"
+      tail -n +2 "$c_dir/loki/post/all.csv"
+    } > "$out_dir/all_logs.csv"
 
-    # Merge pre + during + post Loki CSVs into a single all_logs.csv.
-    python3 - "$src" "$out_dir/all_logs.csv" <<'PYEOF'
-import csv, sys
-from pathlib import Path
+    cp "$c_dir/timeline.json" "$out_dir/timeline.json"
 
-src  = Path(sys.argv[1])
-dest = Path(sys.argv[2])
-
-phases = ["pre", "during", "post"]
-rows = []
-for phase in phases:
-    p = src / "loki" / phase / "all.csv"
-    if not p.exists():
-        print(f"  [warn] missing {p}", flush=True)
-        continue
-    with open(p, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-
-rows.sort(key=lambda r: int(r["timestamp_ns"]))
-
-fieldnames = ["timestamp_ns", "pod", "container", "app", "line"]
-with open(dest, "w", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-
-print(f"  [merge] {len(rows)} rows → {dest}", flush=True)
-PYEOF
+    echo "  -> $(wc -l < "$out_dir/all_logs.csv") lines in all_logs.csv"
 }
 
-use_ready_fault_data "fault-pod-crash-amf"       "03-pod-crash-amf"
-use_ready_fault_data "fault-memory-pressure-upf"  "02-memory-pressure-upf"
-use_ready_fault_data "fault-network-delay-nrf"    "09-network-delay-nrf"
+derive_fault_from_C "fault-pod-crash-amf"      "03-pod-crash-amf"
+derive_fault_from_C "fault-memory-pressure-upf" "02-memory-pressure-upf"
+derive_fault_from_C "fault-network-delay-nrf"   "09-network-delay-nrf"
 
 echo ""
 echo "============================================================"

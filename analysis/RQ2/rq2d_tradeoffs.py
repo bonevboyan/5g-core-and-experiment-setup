@@ -193,31 +193,74 @@ def plot_overhead_vs_reduction(metrics: pd.DataFrame):
 # Figure 3: Summary heatmap
 # ---------------------------------------------------------------------------
 
+def _fmt_cell(col: str, v: float) -> str:
+    """Format a raw metric value for display in a heatmap cell."""
+    if np.isnan(v):
+        return ""
+    if col.endswith("_pct") or col == "reduction_pct":
+        return f"{v:.1f}%"
+    if col == "compression_ratio":
+        return f"{v:.1f}×"
+    if col in ("cpu_s", "query_latency_s", "total_query_latency_s"):
+        return f"{v:.2f}s"
+    if col == "peak_mem_mb":
+        return f"{v:.0f}M"
+    return f"{v:.2f}"
+
+
+def _normalise_col(col: str, series: pd.Series, higher_better: bool) -> pd.Series:
+    """
+    Normalise a metric column to [0, 1].
+    """
+    vals = series.replace([np.inf, -np.inf], np.nan)
+    finite = vals.dropna()
+    if finite.empty:
+        return pd.Series(np.nan, index=series.index)
+
+    is_pct = col.endswith("_pct") or col == "reduction_pct"
+    if is_pct:
+        result = vals / 100.0
+    else:
+        mn, mx = finite.min(), finite.max()
+        if mx == mn:
+            result = pd.Series(1.0, index=series.index)
+        elif higher_better:
+            result = (vals - mn) / (mx - mn)
+        else:
+            result = 1.0 - (vals - mn) / (mx - mn)
+
+    if not higher_better and not is_pct:
+        pass
+    elif not higher_better and is_pct:
+        result = 1.0 - result
+
+    return result
+
+
 def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
     """
     One column per metric, one row per strategy (averaged across scenarios).
-    Values are normalised: for "better = higher" metrics, raw value / max;
-    for "better = lower" metrics (overhead), min / raw value.
     """
     m_mean = metrics.groupby("strategy").mean(numeric_only=True)
     v_mean = vis.groupby("strategy").mean(numeric_only=True) if not vis.empty else pd.DataFrame()
 
     metric_config = [
-        ("reduction_pct",         "Reduction\n(%)",        True),
-        ("compression_ratio",     "Compression\nratio",    True),
-        ("fault_visibility_pct",  "Fault\nvisibility (%)", True),
-        ("fault_line_retention_pct", "Fault line\nretention (%)", True),
-        ("total_retention_pct",   "Total\nretention (%)",  True),
-        ("novelty_retention_pct", "Novelty\nretention (%)", True),
-        ("cpu_s",                 "CPU\ntime (s)",         False),
-        ("peak_mem_mb",           "Peak\nmem (MiB)",       False),
-        ("total_query_latency_s", "Query\nlatency (s)",    False),
+        ("reduction_pct",              "Reduction\n(%)",              True),
+        ("compression_ratio",          "Compression\nratio",          True),
+        ("fault_visibility_pct",       "Fault\nvisibility (%)",       True),
+        ("fault_window_retention_pct", "Fault window\nretention (%)", True),
+        ("fault_line_retention_pct",   "Fault line\nretention (%)",   True),
+        ("total_retention_pct",        "Total\nretention (%)",        True),
+        ("novelty_retention_pct",      "Novelty\nretention (%)",      True),
+        ("cpu_s",                      "CPU\ntime (s)",               False),
+        ("peak_mem_mb",                "Peak\nmem (MiB)",             False),
+        ("query_latency_s",            "Query\nlatency (s)",          False),
     ]
 
     rows = {}
     for strat in STRATEGIES:
         row = {}
-        for col, _, higher_better in metric_config:
+        for col, _, _ in metric_config:
             if col in m_mean.columns and strat in m_mean.index:
                 row[col] = float(m_mean.loc[strat, col])
             elif col in v_mean.columns and strat in v_mean.index:
@@ -232,16 +275,7 @@ def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
     for col, _, higher_better in metric_config:
         if col not in raw.columns:
             continue
-        col_vals = raw[col].replace([np.inf, -np.inf], np.nan).dropna()
-        if col_vals.empty:
-            continue
-        mn, mx = col_vals.min(), col_vals.max()
-        if mx == mn:
-            normalised[col] = 1.0 if higher_better else 1.0
-        elif higher_better:
-            normalised[col] = (raw[col] - mn) / (mx - mn)
-        else:
-            normalised[col] = 1.0 - (raw[col] - mn) / (mx - mn)
+        normalised[col] = _normalise_col(col, raw[col], higher_better)
 
     normalised = normalised.dropna(how="all")
     if normalised.empty:
@@ -251,37 +285,45 @@ def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
     row_labels   = [STRATEGY_LABELS.get(s, s) for s in normalised.index]
     present_cols = [c for c, _, _ in metric_config if c in normalised.columns]
     col_labels   = [lbl for c, lbl, _ in metric_config if c in present_cols]
-    matrix       = normalised[present_cols].values.astype(float)
+    color_matrix = normalised[present_cols].values.astype(float)
 
-    fig, ax = plt.subplots(figsize=(max(8, len(col_labels) * 1.1),
+    # String annotation matrix from raw values.
+    annot_matrix = np.empty(color_matrix.shape, dtype=object)
+    for j, col in enumerate(present_cols):
+        for i, strat in enumerate(normalised.index):
+            v = raw.loc[strat, col] if strat in raw.index else np.nan
+            annot_matrix[i, j] = _fmt_cell(col, v)
+
+    fig, ax = plt.subplots(figsize=(max(8, len(col_labels) * 1.3),
                                    max(3, len(row_labels) * 0.9)),
                            dpi=FIGURE_DPI)
 
     if _HAS_SEABORN:
         import seaborn as sns
-        sns.heatmap(matrix,
+        sns.heatmap(color_matrix,
                     xticklabels=col_labels,
                     yticklabels=row_labels,
-                    annot=True, fmt=".2f",
+                    annot=annot_matrix, fmt="",
                     cmap="RdYlGn",
                     vmin=0, vmax=1,
                     linewidths=0.5, ax=ax,
-                    cbar_kws={"label": "Normalised score"})
+                    annot_kws={"size": FONT_SIZE_TICK - 1},
+                    cbar_kws={"label": "Normalised score (green = better)"})
     else:
-        im = ax.imshow(matrix, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
-        plt.colorbar(im, ax=ax, label="Normalised score")
+        im = ax.imshow(color_matrix, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
+        plt.colorbar(im, ax=ax, label="Normalised score (green = better)")
         ax.set_xticks(range(len(col_labels)))
         ax.set_yticks(range(len(row_labels)))
         ax.set_xticklabels(col_labels, fontsize=FONT_SIZE_TICK, rotation=30, ha="right")
         ax.set_yticklabels(row_labels, fontsize=FONT_SIZE_TICK)
         for i in range(len(row_labels)):
             for j in range(len(col_labels)):
-                v = matrix[i, j]
-                if not np.isnan(v):
-                    ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                txt = annot_matrix[i, j]
+                if txt:
+                    ax.text(j, i, txt, ha="center", va="center",
                             fontsize=FONT_SIZE_TICK - 1)
 
-    ax.set_title("RQ2d — Strategy comparison (normalised scores)",
+    ax.set_title("RQ2d — Strategy comparison (cell = raw value, colour = normalised)",
                  fontsize=FONT_SIZE_TITLE)
 
     fig.tight_layout()
@@ -307,10 +349,10 @@ def save_tradeoff_table(metrics: pd.DataFrame, vis: pd.DataFrame):
 
     cols = [
         "strategy_label", "reduction_pct", "compression_ratio",
-        "cpu_s", "wall_s", "peak_mem_mb", "total_query_latency_s",
-        "fault_visibility_pct", "fault_line_retention_pct",
-        "total_retention_pct", "novelty_retention_pct",
-        "fault_window_retention_pct",
+        "cpu_s", "peak_mem_mb", "query_latency_s",
+        "fault_visibility_pct", "fault_window_retention_pct",
+        "fault_line_retention_pct", "total_retention_pct",
+        "novelty_retention_pct",
     ]
     out_df = merged[[c for c in cols if c in merged.columns]].copy()
 
@@ -319,14 +361,13 @@ def save_tradeoff_table(metrics: pd.DataFrame, vis: pd.DataFrame):
         "reduction_pct":               "Storage reduction (%)",
         "compression_ratio":           "Compression ratio (×)",
         "cpu_s":                       "CPU time (s)",
-        "wall_s":                      "Wall time (s)",
         "peak_mem_mb":                 "Peak memory (MiB)",
-        "total_query_latency_s":       "Query latency (s)",
+        "query_latency_s":             "Query latency (s)",
         "fault_visibility_pct":        "Fault visibility (%)",
+        "fault_window_retention_pct":  "Fault-window retention (%)",
         "fault_line_retention_pct":    "Fault line retention (%)",
         "total_retention_pct":         "Total retention (%)",
         "novelty_retention_pct":       "Novelty retention (%)",
-        "fault_window_retention_pct":  "Fault-window retention (%)",
     }
     out_df = out_df.rename(columns={k: v for k, v in rename.items() if k in out_df.columns})
 

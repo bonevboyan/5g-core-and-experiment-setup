@@ -8,20 +8,18 @@ into a plain-text log file suitable for LogShrink and Denum.
 Lines are sorted by timestamp_ns.  ANSI escape codes and blank lines
 are stripped.
 
-Corpus definition: Open5GS NFs + UERANSIM (simulated RAN/UE).
-MongoDB (JSON structured logs, database infrastructure) and Beyla
-(eBPF observability agent, meta-level) are excluded from all strategies
-so that every strategy operates on the same input.
+Corpus definition: Open5GS NFs + UERANSIM + MongoDB.
+MongoDB JSON logs are normalised to plain text before writing.
+Beyla (eBPF observability agent) is disabled at collection time so it
+never appears in the Loki CSV.
 """
 
 import argparse
 import csv
 from pathlib import Path
 
+from log_parse import normalize_mongodb
 from measure_overhead import strip_ansi
-
-# Apps excluded from the corpus across all strategies.
-EXCLUDE_APPS = {"mongodb", "beyla"}
 
 
 def main():
@@ -35,20 +33,15 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    skipped = 0
     with open(in_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row.get("app", "") in EXCLUDE_APPS:
-                skipped += 1
-                continue
+            app  = row.get("app", "")
             ts   = int(row.get("timestamp_ns", 0))
-            line = strip_ansi(row.get("line", "")).strip()
+            raw  = strip_ansi(row.get("line", "")).strip()
+            line = normalize_mongodb(raw) if app == "mongodb" else raw
             if line:
                 rows.append((ts, line))
-
-    if skipped:
-        print(f"[extract_lines] skipped {skipped} lines from non-NF apps {sorted(EXCLUDE_APPS)}")
 
     rows.sort(key=lambda r: r[0])
 

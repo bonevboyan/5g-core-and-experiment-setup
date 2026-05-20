@@ -12,6 +12,14 @@ source "$SCRIPT_DIR/../../lib/common.sh"
 IN_BASE="$DATA_DIR/B-log-strategies/01-collect"
 OUT_BASE="$DATA_DIR/B-log-strategies/02-logshrink"
 
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --raw-base) IN_BASE="$2";  shift 2 ;;
+        --out-base) OUT_BASE="$2"; shift 2 ;;
+        *) echo "Unknown argument: $1"; exit 1 ;;
+    esac
+done
+
 SCENARIOS=(steady bursty fault-pod-crash-amf fault-memory-pressure-upf fault-network-delay-nrf)
 
 PARSER_DIR="$SCRIPT_DIR/../cloned_repos/LogShrink/python_compression/parser"

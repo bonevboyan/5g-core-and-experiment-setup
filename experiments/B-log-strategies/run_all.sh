@@ -1,50 +1,71 @@
 #!/usr/bin/env bash
 # B-log-strategies/run_all.sh
 #
-# Runs all observability experiments in sequence.
+# Four-pass experiment runner - each pass is an independent scenario execution with its own ground truth.
 #
-# Phases:
-#   01 — Raw log collection (steady, bursty, 3 fault scenarios)
-#   02 — LogShrink compression
-#   03 — Denum compression
-#   04 — SALO
-#   05 — Log preprocessing
-#   06 — Visibility measurement
+#   Pass 1 — Raw collection → LogShrink + Denum
+#             CPU measured via getrusage during each apply.py run.
+#
+#   Pass 2 — SALO sidecar
+#             CPU measured via Prometheus container_cpu_usage_seconds_total
+#             while the DaemonSet processes live pod logs.
+#
+#   Pass 3 — Preprocessing sidecar
+#             Same as Pass 2.
+#
+#   Pass 4 — Visibility + storage comparison across all strategies
+#             using each strategy's own ground truth.
+#
+# Output:
+#   $DATA_DIR/B-log-strategies/
+#     01-collect/<scenario>/          pass-1 
+#     02-logshrink/<scenario>/        LogShrink compressed output + metrics.json
+#     03-denum/<scenario>/            Denum compressed output + metrics.json
+#     05-sidecar/
+#       run-salo/<scenario>/          pass-2
+#         raw/all_logs.csv
+#         salo-stream/filtered.csv    metrics.json 
+#       run-preproc/<scenario>/       pass-3 
+#         raw/all_logs.csv
+#         preproc-stream/filtered.csv
+#     04-visibility/<scenario>/visibility_metrics.json   merged comparison
 #
 # Usage:
-#   bash run_all.sh                      # run all phases
-#   bash run_all.sh --from 03            # skip 01-02, start from Denum
-#   bash run_all.sh --faults-only        # phase 01: skip steady/bursty, run only fault scenarios
-#
-# Estimated runtime: ~75 minutes (collection ~55 min + strategies ~20 min)
+#   bash run_all.sh                      # full four-pass run (~4h 25m)
+#   bash run_all.sh --from 2             # skip Pass 1, resume from SALO pass
+#   bash run_all.sh --faults-only        # skip steady/bursty in all passes
+#   bash run_all.sh --base-faults-only   # faults only in Pass 1; Passes 2-3 run all scenarios
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
 
 FROM=1
-COLLECT_EXTRA_ARGS=""
-if [[ "${1:-}" == "--from" && -n "${2:-}" ]]; then FROM="$2"; fi
-if [[ "${1:-}" == "--faults-only" ]]; then COLLECT_EXTRA_ARGS="--faults-only"; fi
+FAULTS_ONLY=false
+BASE_FAULTS_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --from)             FROM="$2"; shift 2 ;;
+        --faults-only)      FAULTS_ONLY=true; shift ;;
+        --base-faults-only) BASE_FAULTS_ONLY=true; shift ;;
+        *) echo "Unknown argument: $1"; exit 1 ;;
+    esac
+done
 
 preflight() {
     local ok=1
-
     echo "[preflight] checking dependencies..."
-
-    # Python packages
     for pkg in pandas numpy pyppmd regex; do
         if ! python3 -c "import $pkg" 2>/dev/null; then
             echo "  MISSING python package: $pkg  →  pip install $pkg"
             ok=0
         fi
     done
-
-    # C++ compiler (needed to build LogShrink's THULR binary)
     if ! command -v g++ >/dev/null 2>&1; then
         echo "  MISSING g++  →  sudo apt install build-essential"
         ok=0
     fi
-
     if [[ "$ok" -eq 0 ]]; then
         echo "[preflight] fix the above and re-run."
         exit 1
@@ -54,27 +75,88 @@ preflight() {
 
 preflight
 
-run_phase() {
-    local num="$1" name="$2" script="$3" extra="${4:-}"
-    if [[ "$num" -lt "$FROM" ]]; then
-        echo "[skip] Phase B-$num ($name)"
-        return
+BASE="$DATA_DIR/B-log-strategies"
+INTER_PASS_SLEEP=120  
+
+COLLECT_ARGS=""
+SIDECAR_ARGS=""
+if $FAULTS_ONLY; then
+    COLLECT_ARGS="--faults-only"
+    SIDECAR_ARGS="--faults-only"
+elif $BASE_FAULTS_ONLY; then
+    COLLECT_ARGS="--faults-only"
+fi
+
+run_pass() {
+    local num="$1" name="$2"
+    if [[ $num -lt $FROM ]]; then
+        echo "[skip] Pass $num — $name"
+        return 1
     fi
     echo ""
     echo "════════════════════════════════════════════════════════════"
-    echo " B-$num: $name"
+    echo " Pass $num — $name"
     echo "════════════════════════════════════════════════════════════"
-    bash "$script" $extra
-    echo "[done] B-$num complete."
-    sleep 10
+    return 0
 }
 
-run_phase 1 "Raw log collection"           "$SCRIPT_DIR/01-collect/run.sh"  "$COLLECT_EXTRA_ARGS"
-run_phase 2 "LogShrink"                    "$SCRIPT_DIR/02-logshrink/run.sh"
-run_phase 3 "Denum"                        "$SCRIPT_DIR/03-denum/run.sh"
-run_phase 4 "SALO"                         "$SCRIPT_DIR/04-salo/run.sh"
-run_phase 5 "Log preprocessing"            "$SCRIPT_DIR/05-preprocessing/run.sh"
-run_phase 6 "Visibility measurement"       "$SCRIPT_DIR/06-visibility/run.sh"
+# ──────────────────────────────────────────────────────────────────────────────
+# Pass 1 — Raw collection + LogShrink + Denum
+# ──────────────────────────────────────────────────────────────────────────────
+
+if run_pass 1 "Raw collection + LogShrink + Denum"; then
+    bash "$SCRIPT_DIR/01-collect/run.sh"   $COLLECT_ARGS
+    bash "$SCRIPT_DIR/02-logshrink/run.sh"
+    bash "$SCRIPT_DIR/03-denum/run.sh"
+    echo ""
+    echo "[done] Pass 1 complete. Cooling down ${INTER_PASS_SLEEP}s ..."
+    sleep "$INTER_PASS_SLEEP"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pass 2 — SALO
+# ──────────────────────────────────────────────────────────────────────────────
+
+if run_pass 2 "SALO → $BASE/05-sidecar/run-salo/"; then
+    bash "$SCRIPT_DIR/sidecar/run.sh" \
+        --strategy       salo \
+        --run-tag        run-salo \
+        --skip-visibility \
+        $SIDECAR_ARGS
+    echo ""
+    echo "[done] Pass 2 complete. Cooling down ${INTER_PASS_SLEEP}s ..."
+    sleep "$INTER_PASS_SLEEP"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pass 3 — Preprocessing
+# ──────────────────────────────────────────────────────────────────────────────
+
+if run_pass 3 "Preprocessing → $BASE/05-sidecar/run-preproc/"; then
+    bash "$SCRIPT_DIR/sidecar/run.sh" \
+        --strategy       preproc \
+        --run-tag        run-preproc \
+        --skip-visibility \
+        $SIDECAR_ARGS
+    echo ""
+    echo "[done] Pass 3 complete. Cooling down ${INTER_PASS_SLEEP}s ..."
+    sleep "$INTER_PASS_SLEEP"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pass 4 — Visibility comparison 
+# ──────────────────────────────────────────────────────────────────────────────
+
+if run_pass 4 "Visibility comparison"; then
+    bash "$SCRIPT_DIR/04-visibility/run.sh" \
+        --raw-base            "$BASE/01-collect" \
+        --salo-raw-base       "$BASE/05-sidecar/run-salo/raw" \
+        --preproc-raw-base    "$BASE/05-sidecar/run-preproc/raw" \
+        --logshrink-base      "$BASE/02-logshrink" \
+        --denum-base          "$BASE/03-denum" \
+        --salo-stream-base    "$BASE/05-sidecar/run-salo/salo-stream" \
+        --preproc-stream-base "$BASE/05-sidecar/run-preproc/preproc-stream"
+fi
 
 echo ""
 echo "════════════════════════════════════════════════════════════"

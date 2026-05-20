@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-B-log-strategies/06-visibility/measure.py
+B-log-strategies/04-visibility/measure.py
 
 Measure retained visibility for each reduction strategy.
 
 "Visibility" = ability to recover fault-related events after applying a strategy.
 
-Four complementary metrics per strategy:
+Four metrics per strategy:
 
   fault_line_retention_pct
     Fraction of keyword-matched fault lines from the original that survive.
-    Works for all scenarios; uses heuristic keywords (ERROR, CRITICAL, etc.).
+    Works for all scenarios; uses keywords (ERROR, CRITICAL, etc.).
 
   novelty_retention_pct
     Fraction of template-novelty anomalies that survive reduction.
@@ -20,7 +20,6 @@ Four complementary metrics per strategy:
   fault_window_retention_pct
     Fraction of all log lines from the fault injection window (per timeline.json)
     that survive.  Only available for fault scenarios; set to null otherwise.
-    This is a ground-truth metric: we know exactly when chaos was injected.
 
   total_retention_pct
     Overall fraction of log lines retained regardless of content.
@@ -39,6 +38,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "lib"))
+from log_parse import normalize_mongodb
 from measure_overhead import strip_ansi
 FAULT_LEVEL_RE = re.compile(r'\]\s+(ERROR|CRITICAL|FATAL):', re.IGNORECASE)
 
@@ -49,7 +49,7 @@ FAULT_KW_RE    = re.compile(
     re.IGNORECASE,
 )
 
-EXCLUDE_APPS = {"mongodb", "beyla"}
+EXCLUDE_APPS = {"beyla"}
 
 GO_LEVEL_RE = re.compile(r'(?:^|\s)level=(\w+)', re.IGNORECASE)
 
@@ -59,7 +59,10 @@ _VAR_PATS_VIS = [
     re.compile(r'0x[0-9a-fA-F]+'),
     re.compile(r'imsi-\S+'),
     re.compile(r'suci-\S+'),
+    re.compile(r'\bsupi-\S+'),
     re.compile(r'\(\.\./[^)]+\)'),
+    re.compile(r'\d{2}:\d{2}:\d{2}\.\d+'),   
+    re.compile(r'\b\d{2}/\d{2}\b'),           
     re.compile(r'\b\d+\b'),
 ]
 
@@ -100,11 +103,14 @@ def load_csv_rows(csv_path: Path) -> list[dict]:
     with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row.get("app", "") in EXCLUDE_APPS:
+            app = row.get("app", "")
+            if app in EXCLUDE_APPS:
                 continue
+            raw  = strip_ansi(row.get("line", ""))
+            line = normalize_mongodb(raw.strip()) if app == "mongodb" else raw
             rows.append({
                 "ts_ns": int(row.get("timestamp_ns", 0)),
-                "line":  strip_ansi(row.get("line", "")),
+                "line":  line,
             })
     return rows
 
@@ -154,8 +160,7 @@ def measure_visibility(
         "retained_fault_templates":     len(retained_templates),
         "total_retention_pct":          round(total_ret, 2),
         "fault_line_retention_pct":     round(fault_ret, 2),
-        "fault_template_retention_pct": round(tmpl_ret, 2),
-        "fault_visibility_pct":         round(tmpl_ret, 2),  # template-level: can the fault be detected?
+        "fault_visibility_pct":         round(tmpl_ret, 2),
         "novelty_anomaly_count":        None,
         "novelty_retention_pct":        None,
         "novelty_false_negative_pct":   None,
@@ -202,12 +207,14 @@ def main():
                     help="Path to steady-state all_logs.csv; enables novelty anomaly detection")
     ap.add_argument("--timeline",          default=None,
                     help="Path to timeline.json for fault-window metric")
-    ap.add_argument("--logshrink-dir",     default=None)
-    ap.add_argument("--denum-dir",         default=None)
-    ap.add_argument("--salo-dir",          default=None)
-    ap.add_argument("--preprocessing-dir", default=None)
-    ap.add_argument("--outdir",            required=True)
-    ap.add_argument("--scenario",          default="unknown")
+    ap.add_argument("--logshrink-dir",      default=None)
+    ap.add_argument("--denum-dir",          default=None)
+    ap.add_argument("--salo-stream-dir",    default=None)
+    ap.add_argument("--preproc-stream-dir", default=None)
+    ap.add_argument("--outdir",             required=True)
+    ap.add_argument("--scenario",           default="unknown")
+    ap.add_argument("--out-file",           default="visibility_metrics.json",
+                    help="Output filename inside --outdir")
     args = ap.parse_args()
 
     out_dir = Path(args.outdir)
@@ -242,8 +249,8 @@ def main():
         results["strategies"][strat] = measure_visibility(
             original_rows, None, timeline, normal_templates)
 
-    for strat, strat_dir in [("salo",         args.salo_dir),
-                              ("preprocessing", args.preprocessing_dir)]:
+    for strat, strat_dir in [("salo-stream",    args.salo_stream_dir),
+                              ("preproc-stream", args.preproc_stream_dir)]:
         if strat_dir is None:
             continue
         filtered_csv = Path(strat_dir) / "filtered.csv"
@@ -263,7 +270,7 @@ def main():
         fwr_str = f"  fault_window={fwr}%" if fwr is not None else ""
         print(f"  [{strat}] fault_visibility={fv}%  total_retention={tr}%{nov_str}{fwr_str}")
 
-    metrics_path = out_dir / "visibility_metrics.json"
+    metrics_path = out_dir / args.out_file
     with open(metrics_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"[visibility] → {metrics_path}")

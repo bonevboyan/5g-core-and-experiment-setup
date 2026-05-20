@@ -1,0 +1,154 @@
+---
+# Two DaemonSets run simultaneously — one per strategy — so a single
+# experiment run produces filtered output for both SALO and preprocessing.
+# Each pushes to Loki under its own job label:
+#   {job="filter-agent/salo",   namespace="open5gs", pod=<pod>, app=<app>}
+#   {job="filter-agent/preproc",namespace="open5gs", pod=<pod>, app=<app>}
+#
+# deploy.sh builds the image, loads it into kind,
+# creates the pretrained ConfigMap, and waits for rollout:
+#   bash sidecar/deploy.sh --strategy both --data-dir <data/B-log-strategies>
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-filter-agent-salo
+  namespace: open5gs
+  labels:
+    app: log-filter-agent
+    filter-strategy: salo
+spec:
+  selector:
+    matchLabels:
+      app: log-filter-agent
+      filter-strategy: salo
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: log-filter-agent
+        filter-strategy: salo
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      containers:
+        - name: filter-agent
+          image: log-filter-agent:latest
+          imagePullPolicy: Never
+          env:
+            - name: FILTER_STRATEGY
+              value: "salo"
+            - name: LOKI_URL
+              value: "http://loki.monitoring.svc.cluster.local:3100"
+            - name: NAMESPACE
+              value: "open5gs"
+            - name: BATCH_INTERVAL_S
+              value: "1.0"
+            - name: BATCH_LINES
+              value: "200"
+            - name: POLL_INTERVAL_S
+              value: "0.25"
+            - name: RARE_TEMPLATES_JSON
+              value: /pretrained/rare_templates.json
+          volumeMounts:
+            - name: podlogs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: pretrained
+              mountPath: /pretrained
+              readOnly: true
+            - name: output
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      volumes:
+        - name: podlogs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: pretrained
+          configMap:
+            name: log-filter-pretrained
+            optional: true
+        - name: output
+          emptyDir: {}
+      terminationGracePeriodSeconds: 5
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-filter-agent-preproc
+  namespace: open5gs
+  labels:
+    app: log-filter-agent
+    filter-strategy: preproc
+spec:
+  selector:
+    matchLabels:
+      app: log-filter-agent
+      filter-strategy: preproc
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: log-filter-agent
+        filter-strategy: preproc
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      containers:
+        - name: filter-agent
+          image: log-filter-agent:latest
+          imagePullPolicy: Never
+          env:
+            - name: FILTER_STRATEGY
+              value: "preproc"
+            - name: LOKI_URL
+              value: "http://loki.monitoring.svc.cluster.local:3100"
+            - name: NAMESPACE
+              value: "open5gs"
+            - name: BATCH_INTERVAL_S
+              value: "1.0"
+            - name: BATCH_LINES
+              value: "200"
+            - name: POLL_INTERVAL_S
+              value: "0.25"
+            - name: STATIC_RULES_JSON
+              value: /pretrained/static_rules.json
+          volumeMounts:
+            - name: podlogs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: pretrained
+              mountPath: /pretrained
+              readOnly: true
+            - name: output
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      volumes:
+        - name: podlogs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: pretrained
+          configMap:
+            name: log-filter-pretrained
+            optional: true
+        - name: output
+          emptyDir: {}
+      terminationGracePeriodSeconds: 5

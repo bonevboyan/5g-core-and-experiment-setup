@@ -5,7 +5,38 @@ B-log-strategies/lib/log_parse.py
 Shared log-parsing utilities: Open5GS log regex, severity levels,
 variable-token patterns, and template normalisation.
 """
+import json as _json
 import re
+
+_MONGO_SEV = {
+    "I": "INFO", "D": "DEBUG",
+    "W": "WARNING", "E": "ERROR", "F": "FATAL",
+}
+
+
+def normalize_mongodb(line: str) -> str:
+    """Convert a MongoDB JSON log line to plain text suitable for template mining."""
+    try:
+        d = _json.loads(line)
+    except (_json.JSONDecodeError, ValueError):
+        return line
+    if "msg" not in d:
+        return line
+    sev  = _MONGO_SEV.get((d.get("s") or "I").strip(), "INFO")
+    comp = (d.get("c") or "-").strip()
+    msg  = d.get("msg", "")
+    attr = d.get("attr") or {}
+    parts = [f"MONGO {sev} {comp} {msg}"]
+    if isinstance(attr, dict):
+        for k, v in attr.items():
+            if isinstance(v, (str, int, float, bool)):
+                parts.append(f"{k}={v}")
+    return " ".join(parts)
+
+MONGO_NORM_RE = re.compile(
+    r'^MONGO\s+(?P<level>INFO|DEBUG|WARNING|ERROR|FATAL)\s+\S+\s+(?P<message>.*)',
+    re.DOTALL,
+)
 
 LOG_RE = re.compile(
     r'^(?P<date>\d{2}/\d{2})\s+'

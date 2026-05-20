@@ -25,11 +25,20 @@ STRATEGIES = ["logshrink", "denum", "salo", "preprocessing"]
 STRATEGY_DIRS = {
     "logshrink":     DATA_ROOT / "02-logshrink",
     "denum":         DATA_ROOT / "03-denum",
-    "salo":          DATA_ROOT / "04-salo",
-    "preprocessing": DATA_ROOT / "05-preprocessing",
+    "salo":          DATA_ROOT / "05-sidecar" / "run-salo"    / "salo-stream",
+    "preprocessing": DATA_ROOT / "05-sidecar" / "run-preproc" / "preproc-stream",
 }
 
-VISIBILITY_DIR = DATA_ROOT / "06-visibility"
+VISIBILITY_DIR = DATA_ROOT / "04-visibility"
+
+VISIBILITY_KEYS = {
+    "logshrink":     "logshrink",
+    "denum":         "denum",
+    "salo":          "salo-stream",
+    "preprocessing": "preproc-stream",
+}
+
+STRATEGY_FROM_VIS_KEY = {v: k for k, v in VISIBILITY_KEYS.items()}
 
 SCENARIOS = [
     "steady",
