@@ -28,7 +28,7 @@ import analysis.common as c
 
 def run() -> pd.DataFrame:
     c.ensure_dirs()
-    slugs = c.fault_slugs()
+    slugs = c.fault_slugs_by_family()
     chains: dict[str, dict] = {}
     nfs: set[str] = set()
     for slug in slugs:
@@ -97,27 +97,55 @@ def run() -> pd.DataFrame:
 def _plot(onset_df, chains, slugs, nf_order):
     M = onset_df[slugs].to_numpy(dtype=float)
     masked = np.ma.masked_less(M, 0)
-    fig, ax = plt.subplots(figsize=(max(12, len(slugs) * 0.5),
-                                    max(4, len(nf_order) * 0.45)))
+    fig, ax = plt.subplots(figsize=(max(14, len(slugs) * 0.6),
+                                    max(5, len(nf_order) * 0.55)))
     cmap = plt.cm.viridis_r.copy()
     cmap.set_bad("white")
-    im = ax.imshow(masked, aspect="auto", cmap=cmap)
+    im = ax.imshow(masked, aspect="auto", cmap=cmap,
+                   interpolation="nearest", rasterized=True)
     ax.set_xticks(range(len(slugs)))
-    ax.set_xticklabels(slugs, rotation=90, fontsize=7)
+    ax.set_xticklabels(slugs, rotation=45, ha="right",
+                       rotation_mode="anchor", fontsize=12)
     ax.set_yticks(range(len(nf_order)))
-    ax.set_yticklabels(nf_order, fontsize=8)
-    # ring the chaos-target cell
+    ax.set_yticklabels([nf.upper() for nf in nf_order], fontsize=13)
     for j, slug in enumerate(slugs):
         tgt = chains[slug]["target"]
         if tgt in nf_order:
             i = nf_order.index(tgt)
             ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
-                                       fill=False, edgecolor="tab:red", lw=1.6))
-    fig.colorbar(im, ax=ax, label="first-signal onset (s after t0)")
-    ax.set_title("NF impact — which NF breaks under which fault "
-                 "(red box = chaos target; white = unaffected)")
+                                       fill=False, edgecolor="tab:red", lw=2.2))
+    # family separators + horizontally-centered class labels along the top
+    fam_display = {
+        "cpu_stress": "CPU Stress",
+        "memory_pressure": "Memory Stress",
+        "pod_crash": "Crash",
+        "network_delay": "Delay",
+        "network_partition": "Partition",
+        "packet_loss": "Loss",
+        "pfcp_attack": "PFCP Attack",
+        "dependency_failure": "Dependency",
+    }
+    fams = [c.FAULTS[s].family for s in slugs]
+    spans: list[tuple[str, int, int]] = []
+    for i, f in enumerate(fams):
+        if spans and spans[-1][0] == f:
+            spans[-1] = (f, spans[-1][1], i)
+        else:
+            spans.append((f, i, i))
+    for f, lo, hi in spans:
+        if lo > 0:
+            ax.axvline(lo - 0.5, color="tab:red", lw=1.6)
+        ax.text((lo + hi) / 2, -1.1, fam_display.get(f, f),
+                color="tab:red", fontsize=10, weight="bold",
+                ha="center", va="bottom")
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("first-signal onset (s after t0)", fontsize=13)
+    cbar.ax.tick_params(labelsize=11)
+    ax.set_title("NF impact — which NF breaks under which fault  "
+                 "(red box = chaos target; white = unaffected)",
+                 fontsize=15, pad=34)
     fig.tight_layout()
-    fig.savefig(c.PLOT_DIR / "nf_impact_heatmap.png", dpi=140)
+    fig.savefig(c.PLOT_DIR / "nf_impact_heatmap.png", dpi=200)
     plt.close(fig)
 
 

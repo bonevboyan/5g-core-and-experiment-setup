@@ -87,10 +87,6 @@ fi
 kind create cluster --config "$KIND_EFFECTIVE"
 echo "  -> Cluster created"
 kubectl get nodes
-# Load cached workload images from host docker into the fresh node BEFORE any
-# helm/kubectl install, so a slow network can't break the bring-up (no-op on
-# the very first run, before a snapshot exists).
-bash "$SCRIPT_DIR/kind/preload-images.sh" load "$CLUSTER" || true
 
 # --- 3. Raise inotify limits (required for Promtail + Chaos Mesh controller) --
 echo "[3/5] Checking inotify limits..."
@@ -213,25 +209,6 @@ else
     [[ "$ue_ok" -eq 1 ]] || { echo "  [gate] FATAL — UEs never established ${UE_COUNT} PDU sessions" >&2; exit 1; }
   fi
 
-  # ── Gate C2: UPF session table sanity (orphaned-bearer early warning) ───────
-  # Gate C only checks the SMF side. The UPF does NOT expose pfcp_sessions_active
-  # (SMF-only); its only session metric is fivegs_upffunction_upf_sessionnbr,
-  # which over-counts (EXTENSIONS.md §10.10) — so an exact UPF==SMF check is not
-  # possible here. This is therefore a NON-FATAL best-effort nudge: if the UPF
-  # session table looks short, restart UEs once; never abort the run on it. The
-  # authoritative orphaned-bearer protection is the post-traffic Send-Error-
-  # Indication gate in run_fault.sh plus the tunnels>=10 health check.
-  if ! wait_for_metric upf fivegs_upffunction_upf_sessionnbr -ge "$UE_COUNT" 60 \
-       "UPF session table >= ${UE_COUNT}"; then
-    echo "  [gate] WARN — UPF session table short (one-shot UE restart, non-fatal)"
-    kubectl rollout restart deployment/ueransim-gnb-ues deployment/ueransim-ues -n open5gs
-    kubectl rollout status  deployment/ueransim-gnb-ues -n open5gs --timeout=120s || true
-    kubectl rollout status  deployment/ueransim-ues     -n open5gs --timeout=120s || true
-    wait_for_metric upf fivegs_upffunction_upf_sessionnbr -ge "$UE_COUNT" 60 \
-       "UPF session table >= ${UE_COUNT} (after restart)" || \
-       echo "  [gate] WARN — UPF still short; deferring to run_fault.sh data-plane gate"
-  fi
-
   helm install loki grafana/loki-stack \
     --namespace monitoring \
     --set promtail.enabled=true \
@@ -269,33 +246,8 @@ else
     --set chaosDaemon.runtime=containerd \
     --set chaosDaemon.socketPath=/run/containerd/containerd.sock
 
-  # Wait for BOTH the controller-manager AND the chaos-daemon DaemonSet (the
-  # per-node agent that actually injects faults — without it faults silently
-  # do nothing). Poll with a generous deadline: on a slow network the chaos
-  # images take 5-7 min each to pull, which blows a fixed `rollout status
-  # --timeout`; a single timeout there used to abort the whole run.
-  echo "  -> Waiting for Chaos Mesh (controller + daemon; pulls can be slow)..."
-  chaos_deadline=$(($(date +%s) + 1200))   # up to 20 min
-  while :; do
-    cm_ready=$(kubectl get deploy chaos-controller-manager -n chaos-mesh \
-      -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
-    cd_ready=$(kubectl get ds chaos-daemon -n chaos-mesh \
-      -o jsonpath='{.status.numberReady}' 2>/dev/null || echo 0)
-    cd_want=$(kubectl get ds chaos-daemon -n chaos-mesh \
-      -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo 0)
-    if [[ "${cm_ready:-0}" -ge 1 && "${cd_want:-0}" -ge 1 \
-          && "${cd_ready:-0}" -ge "${cd_want:-1}" ]]; then
-      echo "  [gate] OK — Chaos Mesh ready (controller=${cm_ready}, daemon=${cd_ready}/${cd_want})"
-      break
-    fi
-    if [[ $(date +%s) -ge $chaos_deadline ]]; then
-      echo "  [gate] FATAL — Chaos Mesh not ready after 20m" \
-           "(controller=${cm_ready:-0}, daemon=${cd_ready:-0}/${cd_want:-0});" \
-           "faults would not inject. Resume with --from N." >&2
-      exit 1
-    fi
-    sleep 10
-  done
+  echo "  -> Waiting for Chaos Mesh to be ready..."
+  kubectl rollout status deployment/chaos-controller-manager -n chaos-mesh --timeout=7m
   
   # ── Metrics Server (Required for kubectl top) ──────────────────────────────
   echo "  [4e] Metrics Server..."
@@ -315,10 +267,6 @@ echo "  monitoring pods:"
 kubectl get pods -n monitoring
 echo "  chaos-mesh pods:"
 kubectl get pods -n chaos-mesh
-
-# Snapshot the now-healthy image set + cache it in host docker so every
-# subsequent recreate can load it offline instead of re-pulling.
-bash "$SCRIPT_DIR/kind/preload-images.sh" snapshot "$CLUSTER" || true
 
 echo ""
 echo "Cluster ready."

@@ -44,8 +44,12 @@ import pandas as pd
 
 ANALYSIS_DIR = Path(__file__).resolve().parent
 REPRO_DIR = ANALYSIS_DIR.parent
-DATA_ROOT = REPRO_DIR / "data" / "experiments" / "C-fault-detection"
-OUT_DIR = REPRO_DIR / "data" / "analysis"
+import os as _os
+_DATASET = _os.environ.get("FAULT_DATASET", "C-fault-detection")
+DATA_ROOT = REPRO_DIR / "data" / "experiments" / _DATASET / "C-fault-detection" \
+    if (REPRO_DIR / "data" / "experiments" / _DATASET / "C-fault-detection").exists() \
+    else REPRO_DIR / "data" / "experiments" / _DATASET
+OUT_DIR = REPRO_DIR / "data" / ("analysis" if _DATASET == "C-fault-detection" else f"analysis-{_DATASET}")
 PLOT_DIR = OUT_DIR / "plots"
 
 PHASES = ("pre", "during", "post")  # on-disk dir names; timeline key for during == "fault"
@@ -140,6 +144,21 @@ FAULTS: dict[str, FaultMeta] = {f.slug: f for f in [
 
 def fault_slugs() -> list[str]:
     return [d.name for d in sorted(DATA_ROOT.iterdir()) if d.is_dir() and d.name in FAULTS]
+
+
+# Canonical order of the 8 fault classes used for grouped heatmaps.
+FAULT_FAMILY_ORDER = [
+    "cpu_stress", "memory_pressure", "pod_crash",
+    "network_delay", "network_partition", "packet_loss",
+    "pfcp_attack", "dependency_failure",
+]
+
+
+def fault_slugs_by_family() -> list[str]:
+    """Slugs ordered by fault class then slug — keeps each class contiguous."""
+    fam_idx = {f: i for i, f in enumerate(FAULT_FAMILY_ORDER)}
+    return sorted(fault_slugs(),
+                  key=lambda s: (fam_idx.get(FAULTS[s].family, 999), s))
 
 
 # --------------------------------------------------------------------------- #
