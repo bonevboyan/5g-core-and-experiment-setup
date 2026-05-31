@@ -29,8 +29,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     FIGURES_DIR, TABLES_DIR, PALETTE, SCENARIO_LABELS, STRATEGY_LABELS,
-    STRATEGIES, SCENARIOS,
-    FIGURE_DPI, FIGURE_SIZE_SQUARE, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE,
+    STRATEGIES, SCENARIOS, FAULT_SCENARIOS,
+    FIGURE_DPI, FIGURE_EXT, FIGURE_SIZE_SQUARE, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE,
     FONT_SIZE_TITLE, FONT_SIZE_LABEL, FONT_SIZE_TICK, FONT_SIZE_LEGEND,
     SCENARIO_PALETTE,
 )
@@ -91,27 +91,29 @@ def plot_pareto_reduction_visibility(combined: pd.DataFrame):
         if pts.empty:
             continue
         scatter_colors = [SCENARIO_PALETTE.get(s, "#888888") for s in pts["scenario"]]
-        ax.scatter(pts["reduction_pct"], pts["fault_visibility_pct"],
+        ax.scatter(pts[x_col], pts["fault_visibility_pct"],
                    s=80, color=scatter_colors,
                    marker=_marker(strat), label=STRATEGY_LABELS[strat],
                    edgecolors=PALETTE[strat], linewidths=1.5, zorder=3)
 
-    means = df.groupby("strategy")[["reduction_pct", "fault_visibility_pct"]].mean().reset_index()
-    pareto = _pareto_front(means, "reduction_pct", "fault_visibility_pct")
+    means = df.groupby("strategy")[[x_col, "fault_visibility_pct"]].mean().reset_index()
+    pareto = _pareto_front(means, x_col, "fault_visibility_pct")
     if not pareto.empty:
-        pareto_sorted = pareto.sort_values("reduction_pct")
-        ax.plot(pareto_sorted["reduction_pct"], pareto_sorted["fault_visibility_pct"],
+        pareto_sorted = pareto.sort_values(x_col)
+        ax.plot(pareto_sorted[x_col], pareto_sorted["fault_visibility_pct"],
                 "k--", linewidth=1.2, zorder=2, label="Pareto front (mean)")
         for _, row in pareto_sorted.iterrows():
             ax.annotate(STRATEGY_LABELS[row["strategy"]],
-                        (row["reduction_pct"], row["fault_visibility_pct"]),
+                        (row[x_col], row["fault_visibility_pct"]),
                         textcoords="offset points", xytext=(5, 5),
                         fontsize=FONT_SIZE_TICK - 1)
 
-    ax.set_xlabel("Storage reduction (%)", fontsize=FONT_SIZE_LABEL)
-    ax.set_ylabel("Fault visibility retained (%)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title("RQ2d — Pareto: reduction vs. fault visibility",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_xlabel("Storage reduction vs Loki CSV (%)", fontsize=FONT_SIZE_LABEL)
+    ax.set_ylabel("Fault template visibility (%)", fontsize=FONT_SIZE_LABEL)
+    ax.set_title(
+        "RQ2d — Pareto: byte reduction vs. fault template visibility",
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.set_xlim(-5, 105)
     ax.set_ylim(-5, 115)
 
@@ -129,7 +131,7 @@ def plot_pareto_reduction_visibility(combined: pd.DataFrame):
             color="gray", ha="left")
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2d_pareto_reduction_visibility.pdf"
+    out = FIGURES_DIR / f"rq2d_pareto_reduction_visibility.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2d] Saved {out}")
@@ -144,11 +146,14 @@ def _marker(strat: str) -> str:
 # ---------------------------------------------------------------------------
 
 def plot_overhead_vs_reduction(metrics: pd.DataFrame):
-    df = metrics.dropna(subset=["cpu_s", "reduction_pct"]).copy()
+    x_col = "reduction_pct"
+    df = metrics.dropna(subset=["cpu_s", x_col]).copy()
 
     if df.empty:
         print("  [rq2d] No cpu/reduction data — skipping overhead scatter.")
         return
+
+    xlabel = "Storage reduction vs Loki CSV (%)"
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4), dpi=FIGURE_DPI)
 
@@ -163,27 +168,31 @@ def plot_overhead_vs_reduction(metrics: pd.DataFrame):
             pts = sub[sub["strategy"] == strat]
             if pts.empty:
                 continue
-            ax.scatter(pts["reduction_pct"], pts[y_col],
+            ax.scatter(pts[x_col], pts[y_col],
                        s=80, color=PALETTE[strat],
                        marker=_marker(strat), label=STRATEGY_LABELS[strat],
                        alpha=0.85, zorder=3)
             for _, row in pts.iterrows():
                 ax.annotate(SCENARIO_LABELS.get(row["scenario"], row["scenario"])[:8],
-                            (row["reduction_pct"], row[y_col]),
+                            (row[x_col], row[y_col]),
                             textcoords="offset points", xytext=(3, 3),
                             fontsize=FONT_SIZE_TICK - 2, alpha=0.7)
 
-        ax.set_xlabel("Storage reduction (%)", fontsize=FONT_SIZE_LABEL)
+        ax.set_xlabel(xlabel, fontsize=FONT_SIZE_LABEL)
         ax.set_ylabel(ylabel, fontsize=FONT_SIZE_LABEL)
         ax.legend(fontsize=FONT_SIZE_LEGEND - 1)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.set_axisbelow(True)
 
-    axes[0].set_title("RQ2d — CPU overhead vs. reduction", fontsize=FONT_SIZE_TITLE)
-    axes[1].set_title("RQ2d — Memory overhead vs. reduction", fontsize=FONT_SIZE_TITLE)
+    axes[0].set_title(
+        "RQ2d — CPU overhead vs. storage reduction",
+        fontsize=FONT_SIZE_TITLE,
+    )
+    axes[1].set_title("RQ2d — Memory overhead vs. storage reduction",
+                      fontsize=FONT_SIZE_TITLE)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2d_overhead_vs_reduction.pdf"
+    out = FIGURES_DIR / f"rq2d_overhead_vs_reduction.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2d] Saved {out}")
@@ -197,10 +206,12 @@ def _fmt_cell(col: str, v: float) -> str:
     """Format a raw metric value for display in a heatmap cell."""
     if np.isnan(v):
         return ""
-    if col.endswith("_pct") or col == "reduction_pct":
+    if col.endswith("_pct"):
         return f"{v:.1f}%"
     if col == "compression_ratio":
         return f"{v:.1f}×"
+    if col == "cpu_throughput_mb_s":
+        return f"{v:.2f}"
     if col in ("cpu_s", "query_latency_s", "total_query_latency_s"):
         return f"{v:.2f}s"
     if col == "peak_mem_mb":
@@ -217,7 +228,7 @@ def _normalise_col(col: str, series: pd.Series, higher_better: bool) -> pd.Serie
     if finite.empty:
         return pd.Series(np.nan, index=series.index)
 
-    is_pct = col.endswith("_pct") or col == "reduction_pct"
+    is_pct = col.endswith("_pct")
     if is_pct:
         result = vals / 100.0
     else:
@@ -237,24 +248,41 @@ def _normalise_col(col: str, series: pd.Series, higher_better: bool) -> pd.Serie
     return result
 
 
+_FAULT_ONLY_VIS_COLS = {
+    "fault_visibility_pct",
+    "fault_line_retention_pct",
+    "strict_fault_line_retention_pct",
+}
+
+
 def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
     """
     One column per metric, one row per strategy (averaged across scenarios).
     """
     m_mean = metrics.groupby("strategy").mean(numeric_only=True)
-    v_mean = vis.groupby("strategy").mean(numeric_only=True) if not vis.empty else pd.DataFrame()
+    if not vis.empty:
+        v_mean_all = vis.groupby("strategy").mean(numeric_only=True)
+        _fault_vis = vis[vis["scenario"].isin(FAULT_SCENARIOS)]
+        v_mean_fault = (_fault_vis.groupby("strategy").mean(numeric_only=True)
+                        if not _fault_vis.empty else pd.DataFrame())
+    else:
+        v_mean_all = pd.DataFrame()
+        v_mean_fault = pd.DataFrame()
 
     metric_config = [
-        ("reduction_pct",              "Reduction\n(%)",              True),
-        ("compression_ratio",          "Compression\nratio",          True),
-        ("fault_visibility_pct",       "Fault\nvisibility (%)",       True),
-        ("fault_window_retention_pct", "Fault window\nretention (%)", True),
-        ("fault_line_retention_pct",   "Fault line\nretention (%)",   True),
-        ("total_retention_pct",        "Total\nretention (%)",        True),
-        ("novelty_retention_pct",      "Novelty\nretention (%)",      True),
-        ("cpu_s",                      "CPU\ntime (s)",               False),
-        ("peak_mem_mb",                "Peak\nmem (MiB)",             False),
-        ("query_latency_s",            "Query\nlatency (s)",          False),
+        ("reduction_pct",                    "Byte\nreduction\nvs CSV (%)",    True),
+        ("line_reduction_pct",               "Event\nreduction (%)",           True),
+        ("compression_ratio",                "Compression\nratio",             True),
+        ("fault_visibility_pct",             "Fault\ntemplate\nvisibility (%)",True),
+        ("fault_window_retention_pct",       "Fault window\nretention (%)",    True),
+        ("fault_line_retention_pct",         "Fault line\nretention\n(liberal %)", True),
+        ("strict_fault_line_retention_pct",  "ERROR+\nretention (%)",          True),
+        ("total_retention_pct",              "Total\nretention (%)",           True),
+        ("novelty_retention_pct",            "Novelty\nretention (%)",         True),
+        ("cpu_s",                            "CPU\ntime (s)",                  False),
+        ("peak_mem_mb",                      "Peak\nmem (MiB)",                False),
+        ("query_latency_s",                  "Query\nlatency (s)",             False),
+        ("cpu_throughput_mb_s",              "CPU\nthroughput\n(MB/CPU-s)",    True),
     ]
 
     rows = {}
@@ -263,10 +291,12 @@ def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
         for col, _, _ in metric_config:
             if col in m_mean.columns and strat in m_mean.index:
                 row[col] = float(m_mean.loc[strat, col])
-            elif col in v_mean.columns and strat in v_mean.index:
-                row[col] = float(v_mean.loc[strat, col])
             else:
-                row[col] = np.nan
+                v_src = v_mean_fault if col in _FAULT_ONLY_VIS_COLS else v_mean_all
+                if col in v_src.columns and strat in v_src.index:
+                    row[col] = float(v_src.loc[strat, col])
+                else:
+                    row[col] = np.nan
         rows[strat] = row
 
     raw = pd.DataFrame(rows, index=[c for c, _, _ in metric_config]).T
@@ -323,11 +353,13 @@ def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
                     ax.text(j, i, txt, ha="center", va="center",
                             fontsize=FONT_SIZE_TICK - 1)
 
-    ax.set_title("RQ2d — Strategy comparison (cell = raw value, colour = normalised)",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        "RQ2d — Strategy comparison (colour = normalised; green = better)",
+        fontsize=FONT_SIZE_TITLE,
+    )
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2d_summary_heatmap.pdf"
+    out = FIGURES_DIR / f"rq2d_summary_heatmap.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2d] Saved {out}")
@@ -343,31 +375,54 @@ def save_tradeoff_table(metrics: pd.DataFrame, vis: pd.DataFrame):
 
     if not vis.empty:
         v_mean = vis.groupby("strategy").mean(numeric_only=True).reset_index()
+
+        fault_vis = vis[vis["scenario"].isin(FAULT_SCENARIOS)]
+        if not fault_vis.empty:
+            v_fault = fault_vis.groupby("strategy").mean(numeric_only=True).reset_index()
+            fault_cols = ["strategy", "fault_visibility_pct", "fault_window_retention_pct",
+                          "fault_line_retention_pct", "strict_fault_line_retention_pct",
+                          "novelty_retention_pct"]
+            v_fault = v_fault[[c for c in fault_cols if c in v_fault.columns]].rename(
+                columns={c: f"{c}_fault_only" for c in fault_cols if c != "strategy"})
+            v_mean = v_mean.merge(v_fault, on="strategy", how="left")
+
         merged = m_mean.merge(v_mean, on="strategy", how="outer", suffixes=("", "_vis"))
     else:
         merged = m_mean
 
     cols = [
-        "strategy_label", "reduction_pct", "compression_ratio",
-        "cpu_s", "peak_mem_mb", "query_latency_s",
-        "fault_visibility_pct", "fault_window_retention_pct",
-        "fault_line_retention_pct", "total_retention_pct",
-        "novelty_retention_pct",
+        "strategy_label", "reduction_pct", "line_reduction_pct",
+        "log_reduction_pct", "compression_ratio",
+        "cpu_s", "cpu_throughput_mb_s", "peak_mem_mb", "query_latency_s",
+        "fault_visibility_pct", "fault_visibility_pct_fault_only",
+        "fault_window_retention_pct", "fault_window_retention_pct_fault_only",
+        "fault_line_retention_pct", "fault_line_retention_pct_fault_only",
+        "strict_fault_line_retention_pct", "strict_fault_line_retention_pct_fault_only",
+        "total_retention_pct", "novelty_retention_pct", "novelty_retention_pct_fault_only",
     ]
     out_df = merged[[c for c in cols if c in merged.columns]].copy()
 
     rename = {
-        "strategy_label":              "Strategy",
-        "reduction_pct":               "Storage reduction (%)",
-        "compression_ratio":           "Compression ratio (×)",
-        "cpu_s":                       "CPU time (s)",
-        "peak_mem_mb":                 "Peak memory (MiB)",
-        "query_latency_s":             "Query latency (s)",
-        "fault_visibility_pct":        "Fault visibility (%)",
-        "fault_window_retention_pct":  "Fault-window retention (%)",
-        "fault_line_retention_pct":    "Fault line retention (%)",
-        "total_retention_pct":         "Total retention (%)",
-        "novelty_retention_pct":       "Novelty retention (%)",
+        "strategy_label":                              "Strategy",
+        "reduction_pct":                               "Byte reduction vs CSV (%)",
+        "line_reduction_pct":                          "Event reduction (%) [0 for lossless]",
+        "log_reduction_pct":                           "Reduction vs raw log (%)",
+        "compression_ratio":                           "Compression ratio (×) [vs raw log / vs CSV]",
+        "cpu_s":                                       "CPU time (s)",
+        "cpu_throughput_mb_s":                         "CPU throughput (MB/CPU-s)",
+        "peak_mem_mb":                                 "Peak memory (MiB)",
+        "query_latency_s":                             "Query latency (s)",
+        "fault_visibility_pct":                        "Fault template visibility (%, all scen)",
+        "fault_visibility_pct_fault_only":             "Fault template visibility (%, fault scen only)",
+        "fault_window_retention_pct":                  "Fault window retention (%, fault scen)",
+        "fault_window_retention_pct_fault_only":       "Fault window retention (%, fault scen only)",
+        "fault_line_retention_pct":                    "Fault line retention (liberal %, all scen)",
+        "fault_line_retention_pct_fault_only":         "Fault line retention (liberal %, fault scen only)",
+        "strict_fault_line_retention_pct":             "ERROR+ line retention (%, all scen)",
+        "strict_fault_line_retention_pct_fault_only":  "ERROR+ line retention (%, fault scen only)",
+        "total_retention_pct":                         "Total retention (%)",
+        "novelty_retention_pct":                       "Novelty retention (%)",
+        "novelty_retention_pct_fault_only":            "Novelty retention (%, fault scen only)",
     }
     out_df = out_df.rename(columns={k: v for k, v in rename.items() if k in out_df.columns})
 

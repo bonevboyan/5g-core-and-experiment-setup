@@ -47,6 +47,14 @@ LOG_RE = re.compile(
     re.DOTALL,
 )
 
+UERANSIM_RE = re.compile(
+    r'^\[(?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}\.\d+\]\s+'
+    r'\[(?P<component>[^\]]+)\]\s+'
+    r'\[(?P<level>\w+)\]\s*'
+    r'(?P<message>.*)',
+    re.DOTALL,
+)
+
 LEVEL_ORDER = {
     "DEBUG": 0, "INFO": 1,
     "WARNING": 2, "WARN": 2,

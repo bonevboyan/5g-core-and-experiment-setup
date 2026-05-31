@@ -17,7 +17,7 @@ from pathlib import Path
 from measure_overhead import ResourceTracker, strip_ansi
 
 LIMIT = 5000
-QUERY = '{namespace="open5gs"}'
+QUERY = '{namespace="open5gs",job!~"filter-agent/.*"}'
 OUT_FILE = "all_logs.csv"
 FIELDNAMES = ["timestamp_ns", "pod", "container", "app", "line"]
 
@@ -62,6 +62,13 @@ def streams_to_rows(data: dict) -> list:
     return rows
 
 
+def _dedup_key(row: dict) -> tuple:
+    """
+    Deduplication key: same app + same stripped content within the same second.
+    """
+    return (row["app"], strip_ansi(row["line"]).strip(), row["timestamp_ns"] // 1_000_000_000)
+
+
 def collect_paginated(url: str, start_ns: int, end_ns: int) -> list:
     """
     Paginate through Loki results by advancing the start timestamp
@@ -85,7 +92,7 @@ def collect_paginated(url: str, start_ns: int, end_ns: int) -> list:
         last_ts = max(r["timestamp_ns"] for r in rows)
         if last_ts <= cursor_ns:
             break
-        cursor_ns = last_ts + 1    
+        cursor_ns = last_ts + 1
 
         total = len(all_rows)
         print(f"  [loki] page {page}: +{len(new_rows)} rows (total {total})", flush=True)
@@ -94,7 +101,18 @@ def collect_paginated(url: str, start_ns: int, end_ns: int) -> list:
             break
 
     all_rows.sort(key=lambda r: r["timestamp_ns"])
-    return all_rows
+
+    seen_content: set = set()
+    deduped: list = []
+    for row in all_rows:
+        k = _dedup_key(row)
+        if k not in seen_content:
+            seen_content.add(k)
+            deduped.append(row)
+    if len(deduped) < len(all_rows):
+        print(f"  [loki] dedup: removed {len(all_rows) - len(deduped)} "
+              f"dual-stream duplicates ({len(deduped)} unique rows remain)", flush=True)
+    return deduped
 
 
 def write_csv(rows: list, out_path: Path):

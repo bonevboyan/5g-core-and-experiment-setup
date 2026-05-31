@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     FIGURES_DIR, TABLES_DIR, PALETTE, SCENARIO_PALETTE,
     STRATEGIES, SCENARIOS, SCENARIO_LABELS, STRATEGY_LABELS,
-    FIGURE_DPI, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE,
+    FIGURE_DPI, FIGURE_EXT, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE,
     FONT_SIZE_TITLE, FONT_SIZE_LABEL, FONT_SIZE_TICK, FONT_SIZE_LEGEND,
     LOSSLESS_STRATEGIES,
 )
@@ -80,15 +80,17 @@ def plot_reduction_pct(df: pd.DataFrame):
     ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
                        fontsize=FONT_SIZE_TICK, rotation=15, ha="right")
     ax.set_ylabel("Storage reduction (%)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title("RQ2a — Telemetry volume reduction by strategy and scenario",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        "RQ2a — Telemetry volume reduction by strategy and scenario"
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.legend(fontsize=FONT_SIZE_LEGEND, loc="upper right")
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
     ax.set_ylim(0, max(pivot.max().max() * 1.25, 10))
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2a_reduction_pct_by_scenario.pdf"
+    out = FIGURES_DIR / f"rq2a_reduction_pct_by_scenario.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2a] Saved {out}")
@@ -124,7 +126,7 @@ def plot_storage_bytes(df: pd.DataFrame):
                  / (1024 ** 2) for s in strategies_present]
 
     bars_in  = ax.bar(x - width / 2, in_bytes, width,
-                      label="Input (raw logs)", color="#90A4AE", alpha=0.9)
+                      label="Input (Loki CSV)", color="#90A4AE", alpha=0.9)
     bars_out = ax.bar(x + width / 2, out_bytes, width,
                       label="Output (after reduction)",
                       color=[PALETTE[s] for s in strategies_present], alpha=0.85)
@@ -140,14 +142,16 @@ def plot_storage_bytes(df: pd.DataFrame):
     ax.set_xticklabels([STRATEGY_LABELS[s] for s in strategies_present],
                        fontsize=FONT_SIZE_TICK)
     ax.set_ylabel("Storage (MiB)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title(f"RQ2a — Storage before and after reduction {title_suffix}",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        f"RQ2a — Storage before and after reduction {title_suffix}",
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.legend(fontsize=FONT_SIZE_LEGEND)
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2a_storage_bytes_comparison.pdf"
+    out = FIGURES_DIR / f"rq2a_storage_bytes_comparison.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2a] Saved {out}")
@@ -158,21 +162,21 @@ def plot_storage_bytes(df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 
 def plot_line_reduction(df: pd.DataFrame):
-    lossy = df[df["strategy"].isin(["salo", "preprocessing"])].copy()
-    lossy = lossy.dropna(subset=["line_reduction_pct"])
+    all_strats = df.copy()
+    all_strats["line_reduction_pct"] = all_strats["line_reduction_pct"].fillna(0.0)
 
-    if lossy.empty:
-        print("  [rq2a] No line_reduction_pct data for lossy strategies — skipping.")
+    if all_strats.empty:
+        print("  [rq2a] No line_reduction_pct data — skipping.")
         return
 
-    present_scenarios = lossy["scenario"].unique().tolist()
-    present_strategies = lossy["strategy"].unique().tolist()
+    present_scenarios  = [s for s in SCENARIOS if s in all_strats["scenario"].values]
+    present_strategies = [s for s in STRATEGIES if s in all_strats["strategy"].values]
 
-    pivot = lossy.pivot_table(index="scenario", columns="strategy",
-                              values="line_reduction_pct", aggfunc="mean")
+    pivot = all_strats.pivot_table(index="scenario", columns="strategy",
+                                   values="line_reduction_pct", aggfunc="mean")
     pivot = pivot.reindex(index=present_scenarios, columns=present_strategies)
 
-    n_scen  = len(pivot)
+    n_scen  = len(present_scenarios)
     n_strat = len(present_strategies)
     x       = np.arange(n_scen)
     width   = 0.7 / n_strat
@@ -198,14 +202,17 @@ def plot_line_reduction(df: pd.DataFrame):
     ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
                        fontsize=FONT_SIZE_TICK, rotation=15, ha="right")
     ax.set_ylabel("Log-event reduction (%)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title("RQ2a — Log-event reduction: SALO vs. Log Preprocessing",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        "RQ2a — Log-event (line) reduction per strategy",
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.legend(fontsize=FONT_SIZE_LEGEND)
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
+    ax.set_ylim(0, max(pivot.max().max() * 1.25, 10))
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2a_line_reduction_pct.pdf"
+    out = FIGURES_DIR / f"rq2a_line_reduction_pct.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2a] Saved {out}")
@@ -217,8 +224,8 @@ def plot_line_reduction(df: pd.DataFrame):
 
 def save_summary_table(df: pd.DataFrame):
     cols = ["strategy_label", "scenario", "input_bytes", "output_bytes",
-            "reduction_pct", "line_reduction_pct", "compression_ratio",
-            "corpus_coverage_pct", "decompression_required"]
+            "reduction_pct", "log_reduction_pct", "line_reduction_pct",
+            "compression_ratio", "corpus_coverage_pct", "decompression_required"]
     out_df = df[[c for c in cols if c in df.columns]].copy()
 
     for col in ["input_bytes", "output_bytes"]:
@@ -230,9 +237,10 @@ def save_summary_table(df: pd.DataFrame):
         "scenario":              "Scenario",
         "input_bytes":           "Input (KiB)",
         "output_bytes":          "Output (KiB)",
-        "reduction_pct":         "Reduction (%)",
+        "reduction_pct":         "Reduction vs CSV (%)",
+        "log_reduction_pct":     "Reduction vs raw log (%)",
         "line_reduction_pct":    "Line reduction (%)",
-        "compression_ratio":     "Ratio (×)",
+        "compression_ratio":     "Ratio (×) [vs raw log for lossless; vs CSV for lossy]",
         "corpus_coverage_pct":   "Corpus coverage (%)",
         "decompression_required": "Decompression needed",
     }

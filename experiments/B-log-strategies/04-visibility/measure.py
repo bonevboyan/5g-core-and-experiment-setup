@@ -49,9 +49,19 @@ FAULT_KW_RE    = re.compile(
     re.IGNORECASE,
 )
 
+_UERANSIM_VIS_RE = re.compile(
+    r'^\[(?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}\.\d+\]\s+'
+    r'\[(?P<component>[^\]]+)\]\s+'
+    r'\[(?P<level>\w+)\]\s*'
+    r'(?P<message>.*)',
+    re.DOTALL,
+)
+
 EXCLUDE_APPS = {"beyla"}
 
 GO_LEVEL_RE = re.compile(r'(?:^|\s)level=(\w+)', re.IGNORECASE)
+
+GO_STRICT_LEVEL_RE = re.compile(r'(?:^|\s)level=(error|critical|fatal)\b', re.IGNORECASE)
 
 _VAR_PATS_VIS = [
     re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE),
@@ -69,15 +79,41 @@ _VAR_PATS_VIS = [
 
 def is_fault_line(line: str) -> bool:
     line = strip_ansi(line)
+
     lm = GO_LEVEL_RE.search(line)
     if lm and lm.group(1).upper() in ("DEBUG", "INFO"):
         return False
+
+    um = _UERANSIM_VIS_RE.match(line)
+    if um:
+        ue_level = um.group("level").upper()
+        if ue_level in ("ERROR", "CRITICAL", "FATAL"):
+            return True
+        if ue_level in ("DEBUG", "INFO"):
+            return False
+        return bool(FAULT_KW_RE.search(um.group("message")))
 
     if FAULT_LEVEL_RE.search(line):
         return True
     if OPEN5GS_LOW_LEVEL_RE.search(line):
         return False
     return bool(FAULT_KW_RE.search(line))
+
+
+def is_strict_fault_line(line: str) -> bool:
+    """Return True only for lines at severity ERROR, CRITICAL, or FATAL.
+    """
+    line = strip_ansi(line)
+
+    lm = GO_STRICT_LEVEL_RE.search(line)
+    if lm:
+        return True
+
+    um = _UERANSIM_VIS_RE.match(line)
+    if um:
+        return um.group("level").upper() in ("ERROR", "CRITICAL", "FATAL")
+
+    return bool(FAULT_LEVEL_RE.search(line))
 
 
 def make_template_vis(line: str) -> str:
@@ -98,7 +134,9 @@ def novelty_anomalies(rows: list[dict], normal_templates: set[str]) -> list[dict
 
 
 def load_csv_rows(csv_path: Path) -> list[dict]:
-    """Load corpus rows as {ts_ns, line} dicts, excluding non-corpus apps."""
+    """Load corpus rows as {ts_ns, line} dicts, excluding non-corpus apps.
+    Deduplicates Loki dual-stream entries.
+    """
     rows = []
     with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
@@ -112,7 +150,19 @@ def load_csv_rows(csv_path: Path) -> list[dict]:
                 "ts_ns": int(row.get("timestamp_ns", 0)),
                 "line":  line,
             })
-    return rows
+
+    seen: set = set()
+    deduped: list = []
+    for r in rows:
+        k = (r["line"], r["ts_ns"] // 1_000_000_000)
+        if k not in seen:
+            seen.add(k)
+            deduped.append(r)
+    if len(deduped) < len(rows):
+        print(f"[load_csv] dedup: removed {len(rows) - len(deduped)} "
+              f"dual-stream duplicates from {csv_path.name} "
+              f"({len(deduped)} unique rows remain)")
+    return deduped
 
 
 def load_timeline(timeline_path: Path) -> dict | None:
@@ -142,29 +192,41 @@ def measure_visibility(
     in_fault  = sum(1 for r in original_rows if is_fault_line(r["line"]))
     out_fault = sum(1 for r in retained        if is_fault_line(r["line"]))
 
+    in_strict  = sum(1 for r in original_rows if is_strict_fault_line(r["line"]))
+    out_strict = sum(1 for r in retained       if is_strict_fault_line(r["line"]))
+
     in_fault_templates  = {make_template_vis(r["line"]) for r in original_rows if is_fault_line(r["line"])}
     out_fault_templates = {make_template_vis(r["line"]) for r in retained       if is_fault_line(r["line"])}
     retained_templates  = in_fault_templates & out_fault_templates
 
     total_ret  = (out_lines / in_lines * 100.0) if in_lines else 100.0
     fault_ret  = (out_fault / in_fault * 100.0) if in_fault else 100.0
+    strict_ret = (out_strict / in_strict * 100.0) if in_strict else 100.0
     tmpl_ret   = (len(retained_templates) / len(in_fault_templates) * 100.0
                   if in_fault_templates else 100.0)
 
+    total_ret  = min(total_ret,  100.0)
+    fault_ret  = min(fault_ret,  100.0)
+    strict_ret = min(strict_ret, 100.0)
+    tmpl_ret   = min(tmpl_ret,   100.0)
+
     result: dict = {
-        "input_total_lines":            in_lines,
-        "output_total_lines":           out_lines,
-        "input_fault_lines":            in_fault,
-        "output_fault_lines":           out_fault,
-        "input_fault_templates":        len(in_fault_templates),
-        "retained_fault_templates":     len(retained_templates),
-        "total_retention_pct":          round(total_ret, 2),
-        "fault_line_retention_pct":     round(fault_ret, 2),
-        "fault_visibility_pct":         round(tmpl_ret, 2),
-        "novelty_anomaly_count":        None,
-        "novelty_retention_pct":        None,
-        "novelty_false_negative_pct":   None,
-        "fault_window_retention_pct":   None,
+        "input_total_lines":               in_lines,
+        "output_total_lines":              out_lines,
+        "input_fault_lines":               in_fault,
+        "output_fault_lines":              out_fault,
+        "input_strict_fault_lines":        in_strict,
+        "output_strict_fault_lines":       out_strict,
+        "input_fault_templates":           len(in_fault_templates),
+        "retained_fault_templates":        len(retained_templates),
+        "total_retention_pct":             round(total_ret, 2),
+        "fault_line_retention_pct":        round(fault_ret, 2),
+        "strict_fault_line_retention_pct": round(strict_ret, 2),
+        "fault_visibility_pct":            round(tmpl_ret, 2),
+        "novelty_anomaly_count":           None,
+        "novelty_retention_pct":           None,
+        "novelty_false_negative_pct":      None,
+        "fault_window_retention_pct":      None,
     }
 
     if normal_templates is not None:
@@ -264,11 +326,14 @@ def main():
     for strat, data in results["strategies"].items():
         fv   = data.get("fault_visibility_pct", "?")
         tr   = data.get("total_retention_pct", "?")
+        flr  = data.get("fault_line_retention_pct", "?")
+        sfr  = data.get("strict_fault_line_retention_pct", "?")
         nov  = data.get("novelty_retention_pct")
         fwr  = data.get("fault_window_retention_pct")
         nov_str = f"  novelty_ret={nov}%" if nov is not None else ""
         fwr_str = f"  fault_window={fwr}%" if fwr is not None else ""
-        print(f"  [{strat}] fault_visibility={fv}%  total_retention={tr}%{nov_str}{fwr_str}")
+        print(f"  [{strat}] fault_visibility={fv}%  total_retention={tr}%"
+              f"  fault_line_ret={flr}%  strict_fault_ret={sfr}%{nov_str}{fwr_str}")
 
     metrics_path = out_dir / args.out_file
     with open(metrics_path, "w") as f:

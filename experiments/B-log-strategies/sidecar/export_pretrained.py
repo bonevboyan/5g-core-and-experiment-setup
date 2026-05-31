@@ -18,7 +18,7 @@ SCRIPT_DIR = Path(__file__).parent
 B_DIR      = SCRIPT_DIR.parent
 LIB_DIR    = B_DIR / "lib"
 sys.path.insert(0, str(LIB_DIR))
-from log_parse import LOG_RE, MONGO_NORM_RE, LEVEL_ORDER, make_template, normalize_mongodb
+from log_parse import LOG_RE, MONGO_NORM_RE, UERANSIM_RE, LEVEL_ORDER, make_template, normalize_mongodb
 from measure_overhead import strip_ansi
 
 RARITY_THRESHOLD       = 0.05
@@ -43,7 +43,7 @@ def load_csv(csv_path: Path) -> list:
             ts_ns = int(row.get("timestamp_ns", 0))
             raw   = strip_ansi(row.get("line", "")).strip()
             line  = normalize_mongodb(raw) if app == "mongodb" else raw
-            m     = LOG_RE.match(line) or MONGO_NORM_RE.match(line)
+            m     = LOG_RE.match(line) or MONGO_NORM_RE.match(line) or UERANSIM_RE.match(line)
             if m:
                 level = m.group("level").upper()
                 tmpl  = make_template(m.group("message"))

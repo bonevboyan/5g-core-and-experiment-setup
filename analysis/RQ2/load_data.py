@@ -69,6 +69,7 @@ def load_all_strategy_metrics() -> pd.DataFrame:
         peak_mem_mb         — peak RSS (MiB)
         query_latency_s     — time to grep the reduced output for fault patterns
         throughput_mb_s     — MB/s throughput during processing
+        cpu_throughput_mb_s — MB/cpu-s; comparable across all strategy types
         decompression_required — bool
     """
     rows = []
@@ -87,6 +88,9 @@ def load_all_strategy_metrics() -> pd.DataFrame:
 
             if strategy in LOSSLESS_STRATEGIES:
                 line_red_pct = 0.0
+
+                if np.isnan(out_lines) and not np.isnan(in_lines):
+                    out_lines = in_lines
             elif not np.isnan(in_lines) and not np.isnan(out_lines) and in_lines > 0:
                 line_red_pct = (1.0 - out_lines / in_lines) * 100.0
             else:
@@ -99,12 +103,18 @@ def load_all_strategy_metrics() -> pd.DataFrame:
             mb   = in_bytes / (1024 ** 2) if not np.isnan(in_bytes) else np.nan
             wall = raw.get("wall_s", np.nan)
 
-            if np.isnan(wall):
-                wall = raw.get("window_duration_s", np.nan)
-            tput = raw.get("throughput_mb_s") or (mb / wall if wall and wall > 0 else np.nan)
+            tput = raw.get("throughput_mb_s", np.nan)
+            if np.isnan(tput) and strategy in LOSSLESS_STRATEGIES:
+                tput = (mb / wall) if (not np.isnan(wall) and wall > 0) else np.nan
 
             if np.isnan(wall) and not np.isnan(tput) and not np.isnan(mb) and tput > 0:
                 wall = round(mb / tput, 3)
+
+            log_tput = raw.get("compression_throughput_mb_s", np.nan)
+            if np.isnan(log_tput) and strategy in LOSSLESS_STRATEGIES:
+                log_bytes = raw.get("input_log_bytes", np.nan)
+                if not np.isnan(log_bytes) and not np.isnan(wall) and wall > 0:
+                    log_tput = log_bytes / (1024 ** 2) / wall
 
             raw_cpu = raw.get("cpu_s", np.nan)
 
@@ -112,8 +122,13 @@ def load_all_strategy_metrics() -> pd.DataFrame:
                 not np.isnan(raw_cpu) and not np.isnan(mb) and mb > 0
             ) else np.nan
 
-            if not np.isnan(raw_cpu) and raw_cpu > 0 and not np.isnan(mb):
-                tput = mb / raw_cpu
+            cpu_tput = (mb / raw_cpu) if (
+                not np.isnan(raw_cpu) and raw_cpu > 0 and not np.isnan(mb)
+            ) else np.nan
+
+            log_red_pct = raw.get("log_reduction_pct", np.nan)
+            if np.isnan(log_red_pct) and strategy not in LOSSLESS_STRATEGIES:
+                log_red_pct = raw.get("reduction_pct", np.nan)
 
             rows.append({
                 "strategy":               strategy,
@@ -123,6 +138,7 @@ def load_all_strategy_metrics() -> pd.DataFrame:
                 "input_lines":            in_lines,
                 "output_lines":           out_lines,
                 "reduction_pct":          raw.get("reduction_pct", np.nan),
+                "log_reduction_pct":      log_red_pct,
                 "line_reduction_pct":     line_red_pct,
                 "compression_ratio":      comp_ratio,
                 "wall_s":                 wall,
@@ -136,6 +152,8 @@ def load_all_strategy_metrics() -> pd.DataFrame:
                                                   raw.get("scan_latency_s",
                                                           raw.get("query_latency_s", np.nan))),
                 "throughput_mb_s":        tput,
+                "log_throughput_mb_s":    log_tput,
+                "cpu_throughput_mb_s":    cpu_tput,
                 "decompression_required": bool(raw.get("decompression_required", False)),
                 "corpus_coverage_pct":    raw.get("corpus_coverage_pct", np.nan),
             })
@@ -189,22 +207,25 @@ def load_all_visibility() -> pd.DataFrame:
         for vis_key, vis in strats.items():
             strategy = STRATEGY_FROM_VIS_KEY.get(vis_key, vis_key)
             rows.append({
-                "strategy":                    strategy,
-                "scenario":                    scenario,
-                "total_retention_pct":         vis.get("total_retention_pct", np.nan),
-                "fault_line_retention_pct":    vis.get("fault_line_retention_pct", np.nan),
-                "fault_template_retention_pct":vis.get("fault_template_retention_pct", np.nan),
-                "fault_visibility_pct":        vis.get("fault_visibility_pct", np.nan),
-                "novelty_retention_pct":       vis.get("novelty_retention_pct", np.nan),
-                "novelty_false_negative_pct":  vis.get("novelty_false_negative_pct", np.nan),
-                "fault_window_retention_pct":  vis.get("fault_window_retention_pct", np.nan),
-                "fault_window_total_lines":    vis.get("fault_window_total_lines", np.nan),
-                "fault_window_retained_lines": vis.get("fault_window_retained_lines", np.nan),
-                "input_total_lines":           vis.get("input_total_lines", np.nan),
-                "output_total_lines":          vis.get("output_total_lines", np.nan),
-                "input_fault_lines":           vis.get("input_fault_lines", np.nan),
-                "output_fault_lines":          vis.get("output_fault_lines", np.nan),
-                "novelty_anomaly_count":       vis.get("novelty_anomaly_count", np.nan),
+                "strategy":                         strategy,
+                "scenario":                         scenario,
+                "total_retention_pct":              vis.get("total_retention_pct", np.nan),
+                "fault_line_retention_pct":         vis.get("fault_line_retention_pct", np.nan),
+                "strict_fault_line_retention_pct":  vis.get("strict_fault_line_retention_pct", np.nan),
+                "fault_template_retention_pct":     vis.get("fault_template_retention_pct", np.nan),
+                "fault_visibility_pct":             vis.get("fault_visibility_pct", np.nan),
+                "novelty_retention_pct":            vis.get("novelty_retention_pct", np.nan),
+                "novelty_false_negative_pct":       vis.get("novelty_false_negative_pct", np.nan),
+                "fault_window_retention_pct":       vis.get("fault_window_retention_pct", np.nan),
+                "fault_window_total_lines":         vis.get("fault_window_total_lines", np.nan),
+                "fault_window_retained_lines":      vis.get("fault_window_retained_lines", np.nan),
+                "input_total_lines":                vis.get("input_total_lines", np.nan),
+                "output_total_lines":               vis.get("output_total_lines", np.nan),
+                "input_fault_lines":                vis.get("input_fault_lines", np.nan),
+                "output_fault_lines":               vis.get("output_fault_lines", np.nan),
+                "input_strict_fault_lines":         vis.get("input_strict_fault_lines", np.nan),
+                "output_strict_fault_lines":        vis.get("output_strict_fault_lines", np.nan),
+                "novelty_anomaly_count":            vis.get("novelty_anomaly_count", np.nan),
             })
 
     if not rows:

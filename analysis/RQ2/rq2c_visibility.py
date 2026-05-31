@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     FIGURES_DIR, TABLES_DIR, PALETTE, SCENARIO_LABELS, STRATEGY_LABELS,
     STRATEGIES, SCENARIOS, FAULT_SCENARIOS,
-    FIGURE_DPI, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE, FIGURE_SIZE_SQUARE,
+    FIGURE_DPI, FIGURE_EXT, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE, FIGURE_SIZE_SQUARE,
     FONT_SIZE_TITLE, FONT_SIZE_LABEL, FONT_SIZE_TICK, FONT_SIZE_LEGEND,
 )
 from load_data import load_all_visibility
@@ -79,11 +79,11 @@ def plot_visibility_heatmap(df: pd.DataFrame):
                     annot=True, fmt=".1f", cmap="YlOrRd_r",
                     vmin=0, vmax=100,
                     linewidths=0.5, ax=ax,
-                    cbar_kws={"label": "Fault visibility (%)"})
+                    cbar_kws={"label": "Fault template visibility (%)"})
     else:
         im = ax.imshow(pivot_present.values.astype(float),
                        cmap="YlOrRd_r", vmin=0, vmax=100, aspect="auto")
-        plt.colorbar(im, ax=ax, label="Fault visibility (%)")
+        plt.colorbar(im, ax=ax, label="Fault template visibility (%)")
         ax.set_xticks(range(len(col_labels)))
         ax.set_yticks(range(len(row_labels)))
         ax.set_xticklabels(col_labels, fontsize=FONT_SIZE_TICK, rotation=30, ha="right")
@@ -95,13 +95,15 @@ def plot_visibility_heatmap(df: pd.DataFrame):
                     ax.text(j, i, f"{v:.1f}", ha="center", va="center",
                             fontsize=FONT_SIZE_TICK - 1)
 
-    ax.set_title("RQ2c — Fault visibility retained after reduction (%)",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        "RQ2c — Fault visibility retained after reduction (%)"
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.set_xlabel("Scenario", fontsize=FONT_SIZE_LABEL)
     ax.set_ylabel("Strategy", fontsize=FONT_SIZE_LABEL)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2c_fault_visibility_heatmap.pdf"
+    out = FIGURES_DIR / f"rq2c_fault_visibility_heatmap.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2c] Saved {out}")
@@ -119,12 +121,12 @@ def plot_fault_visibility_bar(df: pd.DataFrame):
     else:
         title_note = "(fault scenarios)"
 
-    pivot_vis  = fault_df.pivot_table(index="scenario", columns="strategy",
-                                      values="fault_visibility_pct", aggfunc="mean")
-    pivot_line = fault_df.pivot_table(index="scenario", columns="strategy",
-                                      values="fault_line_retention_pct", aggfunc="mean")
-    pivot_vis  = pivot_vis.reindex(columns=STRATEGIES)
-    pivot_line = pivot_line.reindex(columns=STRATEGIES)
+    pivot_vis    = fault_df.pivot_table(index="scenario", columns="strategy",
+                                        values="fault_visibility_pct", aggfunc="mean")
+    pivot_line   = fault_df.pivot_table(index="scenario", columns="strategy",
+                                        values="fault_line_retention_pct", aggfunc="mean")
+    pivot_strict = fault_df.pivot_table(index="scenario", columns="strategy",
+                                        values="strict_fault_line_retention_pct", aggfunc="mean")
 
     present_scenarios = [s for s in FAULT_SCENARIOS
                          if s in pivot_vis.index or s in pivot_line.index]
@@ -135,12 +137,26 @@ def plot_fault_visibility_bar(df: pd.DataFrame):
         print("  [rq2c] No data for fault visibility bar — skipping.")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 4), dpi=FIGURE_DPI)
+    has_strict = not pivot_strict.dropna(how="all").empty
+    n_panels = 3 if has_strict else 2
+    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 4), dpi=FIGURE_DPI)
+    if n_panels == 2:
+        axes = list(axes)
 
-    for ax, pivot, title, ylabel in [
-        (axes[0], pivot_vis,  "Fault template visibility",  "Fault visibility (%)"),
-        (axes[1], pivot_line, "Fault line retention",       "Fault line retention (%)"),
-    ]:
+    panel_specs = [
+        (axes[0], pivot_vis,    "Fault template visibility",
+         "Fault template visibility (%)"),
+        (axes[1], pivot_line,   "Fault line retention (liberal: WARNING + keyword)",
+         "Fault line retention (liberal %)"),
+    ]
+    if has_strict:
+        panel_specs.append(
+            (axes[2], pivot_strict, "ERROR+ line retention",
+             "ERROR+ line retention (%)")
+        )
+
+    for ax, pivot, title, ylabel in panel_specs:
+        pivot = pivot.reindex(columns=STRATEGIES)
         n_scen  = len(present_scenarios)
         n_strat = len(STRATEGIES)
         x       = np.arange(n_scen)
@@ -149,8 +165,12 @@ def plot_fault_visibility_bar(df: pd.DataFrame):
         for i, strat in enumerate(STRATEGIES):
             if strat not in pivot.columns:
                 continue
-            vals = [float(pivot.loc[s, strat]) if s in pivot.index else np.nan
-                    for s in present_scenarios]
+            vals = [
+                float(pivot.loc[s, strat])
+                if s in pivot.index and not pd.isna(pivot.loc[s, strat])
+                else np.nan
+                for s in present_scenarios
+            ]
             offset = (i - n_strat / 2 + 0.5) * width
             ax.bar(x + offset, vals, width * 0.9,
                    label=STRATEGY_LABELS[strat],
@@ -160,14 +180,17 @@ def plot_fault_visibility_bar(df: pd.DataFrame):
         ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
                            fontsize=FONT_SIZE_TICK, rotation=20, ha="right")
         ax.set_ylabel(ylabel, fontsize=FONT_SIZE_LABEL)
-        ax.set_title(f"RQ2c — {title} {title_note}", fontsize=FONT_SIZE_TITLE)
+        ax.set_title(
+            f"RQ2c — {title} {title_note}",
+            fontsize=FONT_SIZE_TITLE,
+        )
         ax.legend(fontsize=FONT_SIZE_LEGEND - 1)
         ax.yaxis.grid(True, linestyle="--", alpha=0.5)
         ax.set_axisbelow(True)
         ax.set_ylim(0, 115)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2c_fault_visibility_bar.pdf"
+    out = FIGURES_DIR / f"rq2c_fault_visibility_bar.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2c] Saved {out}")
@@ -220,15 +243,17 @@ def plot_fault_window_retention(df: pd.DataFrame):
     ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
                        fontsize=FONT_SIZE_TICK, rotation=15, ha="right")
     ax.set_ylabel("Lines retained from fault window (%)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title("RQ2c — Retention of log lines during fault injection window",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        "RQ2c — Retention of log lines during fault injection window",
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.legend(fontsize=FONT_SIZE_LEGEND)
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
     ax.set_ylim(0, 115)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2c_fault_window_retention.pdf"
+    out = FIGURES_DIR / f"rq2c_fault_window_retention.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2c] Saved {out}")
@@ -239,16 +264,23 @@ def plot_fault_window_retention(df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 
 def plot_novelty_retention(df: pd.DataFrame):
-    nov_df = df.dropna(subset=["novelty_retention_pct"]).copy()
+    nov_df = df[df["scenario"] != "steady"].dropna(subset=["novelty_retention_pct"]).copy()
     if nov_df.empty:
         print("  [rq2c] No novelty_retention_pct data — skipping.")
         return
 
+    count_pivot = df[df["scenario"] != "steady"].pivot_table(
+        index="scenario", columns="strategy",
+        values="novelty_anomaly_count", aggfunc="mean",
+    )
     pivot = nov_df.pivot_table(index="scenario", columns="strategy",
                                values="novelty_retention_pct", aggfunc="mean")
-    pivot = pivot.reindex(columns=STRATEGIES)
-    present_scenarios = [s for s in SCENARIOS if s in pivot.index]
-    pivot = pivot.loc[present_scenarios]
+    pivot        = pivot.reindex(columns=STRATEGIES)
+    count_pivot  = count_pivot.reindex(columns=STRATEGIES)
+
+    scenario_order = [s for s in SCENARIOS if s != "steady" and s in pivot.index]
+    pivot       = pivot.loc[scenario_order]
+    count_pivot = count_pivot.reindex(index=scenario_order)
 
     if pivot.empty:
         return
@@ -264,24 +296,39 @@ def plot_novelty_retention(df: pd.DataFrame):
         if strat not in pivot.columns:
             continue
         vals   = pivot[strat].values.astype(float)
+        counts = count_pivot[strat].values if strat in count_pivot.columns else np.full(n_scen, np.nan)
         offset = (i - n_strat / 2 + 0.5) * width
-        ax.bar(x + offset, vals, width * 0.9,
-               label=STRATEGY_LABELS[strat],
-               color=PALETTE[strat], alpha=0.85)
+        bars   = ax.bar(x + offset, vals, width * 0.9,
+                        label=STRATEGY_LABELS[strat],
+                        color=PALETTE[strat], alpha=0.85)
+        for bar, v, cnt in zip(bars, vals, counts):
+            if np.isnan(v):
+                continue
+            if not np.isnan(cnt) and cnt > 0:
+                cnt_int = int(cnt)
+                cnt_str = f"{cnt_int//1000}k" if cnt_int >= 1000 else str(cnt_int)
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 1.0,
+                        cnt_str,
+                        ha="center", va="bottom",
+                        fontsize=max(FONT_SIZE_TICK - 2, 6),
+                        color="#444444")
 
     ax.set_xticks(x)
-    ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
+    ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in scenario_order],
                        fontsize=FONT_SIZE_TICK, rotation=15, ha="right")
     ax.set_ylabel("Novelty anomaly retention (%)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title("RQ2c — Retention of novelty (new-template) anomalies after reduction",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        "RQ2c — Retention of novelty anomalies",
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.legend(fontsize=FONT_SIZE_LEGEND)
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
-    ax.set_ylim(0, 115)
+    ax.set_ylim(0, 130)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2c_novelty_retention.pdf"
+    out = FIGURES_DIR / f"rq2c_novelty_retention.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2c] Saved {out}")
@@ -295,23 +342,28 @@ def save_summary_table(df: pd.DataFrame):
     cols = [
         "strategy_label", "scenario",
         "total_retention_pct", "fault_line_retention_pct",
+        "strict_fault_line_retention_pct",
         "fault_visibility_pct", "novelty_retention_pct",
         "novelty_false_negative_pct", "fault_window_retention_pct",
         "input_fault_lines", "output_fault_lines",
+        "input_strict_fault_lines", "output_strict_fault_lines",
     ]
     out_df = df[[c for c in cols if c in df.columns]].copy()
 
     rename = {
-        "strategy_label":              "Strategy",
-        "scenario":                    "Scenario",
-        "total_retention_pct":         "Total retention (%)",
-        "fault_line_retention_pct":    "Fault line retention (%)",
-        "fault_visibility_pct":        "Fault visibility (%)",
-        "novelty_retention_pct":       "Novelty retention (%)",
-        "novelty_false_negative_pct":  "Novelty false-negative (%)",
-        "fault_window_retention_pct":  "Fault window retention (%)",
-        "input_fault_lines":           "Input fault lines",
-        "output_fault_lines":          "Output fault lines",
+        "strategy_label":                   "Strategy",
+        "scenario":                         "Scenario",
+        "total_retention_pct":              "Total retention (%)",
+        "fault_line_retention_pct":         "Fault line retention (liberal %)",
+        "strict_fault_line_retention_pct":  "ERROR+ line retention (%)",
+        "fault_visibility_pct":             "Fault template visibility (%)",
+        "novelty_retention_pct":            "Novelty retention (%)",
+        "novelty_false_negative_pct":       "Novelty false-negative (%)",
+        "fault_window_retention_pct":       "Fault window retention (%)",
+        "input_fault_lines":                "Input fault lines (liberal)",
+        "output_fault_lines":               "Output fault lines (liberal)",
+        "input_strict_fault_lines":         "Input ERROR+ lines",
+        "output_strict_fault_lines":        "Output ERROR+ lines",
     }
     out_df = out_df.rename(columns={k: v for k, v in rename.items() if k in out_df.columns})
     out_df["Scenario"] = out_df["Scenario"].map(lambda s: SCENARIO_LABELS.get(s, s))

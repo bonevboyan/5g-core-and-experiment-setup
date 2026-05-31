@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     FIGURES_DIR, TABLES_DIR, PALETTE, SCENARIO_LABELS, STRATEGY_LABELS,
     STRATEGIES, SCENARIOS,
-    FIGURE_DPI, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE,
+    FIGURE_DPI, FIGURE_EXT, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE,
     FONT_SIZE_TITLE, FONT_SIZE_LABEL, FONT_SIZE_TICK, FONT_SIZE_LEGEND,
 )
 from load_data import load_all_strategy_metrics
@@ -79,13 +79,15 @@ def plot_cpu_time(df: pd.DataFrame):
     ax.set_xticklabels([STRATEGY_LABELS[s] for s in strats_present],
                        fontsize=FONT_SIZE_TICK)
     ax.set_ylabel("CPU time (s)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title(f"RQ2b — CPU time consumed by reduction pipeline {title_suffix}",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        f"RQ2b — CPU time consumed by reduction {title_suffix}"
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2b_cpu_time.pdf"
+    out = FIGURES_DIR / f"rq2b_cpu_time.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2b] Saved {out}")
@@ -134,7 +136,7 @@ def plot_peak_memory(df: pd.DataFrame):
     ax.set_axisbelow(True)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2b_peak_memory.pdf"
+    out = FIGURES_DIR / f"rq2b_peak_memory.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2b] Saved {out}")
@@ -186,7 +188,7 @@ def plot_query_latency(df: pd.DataFrame):
     ax.set_axisbelow(True)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2b_query_latency.pdf"
+    out = FIGURES_DIR / f"rq2b_query_latency.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2b] Saved {out}")
@@ -241,7 +243,7 @@ def plot_cpu_per_mb(df: pd.DataFrame):
     ax.set_axisbelow(True)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2b_cpu_per_mb.pdf"
+    out = FIGURES_DIR / f"rq2b_cpu_per_mb.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2b] Saved {out}")
@@ -263,13 +265,14 @@ def plot_throughput(df: pd.DataFrame):
     tput_vals = []
     for s in strats_present:
         row = steady[steady["strategy"] == s]
-        if row.empty or "throughput_mb_s" not in row.columns:
+        col = "cpu_throughput_mb_s"
+        if row.empty or col not in row.columns:
             tput_vals.append(np.nan)
         else:
-            tput_vals.append(float(row["throughput_mb_s"].values[0]))
+            tput_vals.append(float(row[col].values[0]))
 
     if all(np.isnan(v) for v in tput_vals):
-        print("  [rq2b] No throughput data — skipping.")
+        print("  [rq2b] No cpu_throughput_mb_s data — skipping.")
         return
 
     x = np.arange(len(strats_present))
@@ -287,14 +290,16 @@ def plot_throughput(df: pd.DataFrame):
     ax.set_xticks(x)
     ax.set_xticklabels([STRATEGY_LABELS[s] for s in strats_present],
                        fontsize=FONT_SIZE_TICK)
-    ax.set_ylabel("Throughput (MB/s)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title(f"RQ2b — Processing throughput per strategy {title_suffix}",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_ylabel("CPU throughput (MB / CPU-s)", fontsize=FONT_SIZE_LABEL)
+    ax.set_title(
+        f"RQ2b — Processing throughput per strategy {title_suffix}",
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
 
     fig.tight_layout()
-    out = FIGURES_DIR / "rq2b_throughput.pdf"
+    out = FIGURES_DIR / f"rq2b_throughput.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2b] Saved {out}")
@@ -306,18 +311,21 @@ def plot_throughput(df: pd.DataFrame):
 
 def save_summary_table(df: pd.DataFrame):
     cols = ["strategy_label", "scenario", "cpu_s", "cpu_per_mb",
-            "peak_mem_mb", "decompression_latency_s", "query_latency_s", "throughput_mb_s"]
+            "peak_mem_mb", "decompression_latency_s", "query_latency_s",
+            "throughput_mb_s", "log_throughput_mb_s", "cpu_throughput_mb_s"]
     out_df = df[[c for c in cols if c in df.columns]].copy()
 
     rename = {
-        "strategy_label":        "Strategy",
-        "scenario":              "Scenario",
-        "cpu_s":                 "CPU time (s)",
-        "cpu_per_mb":            "CPU time per MB (s/MB)",
-        "peak_mem_mb":           "Peak memory (MiB)",
+        "strategy_label":          "Strategy",
+        "scenario":                "Scenario",
+        "cpu_s":                   "CPU time (s)",
+        "cpu_per_mb":              "CPU time per MB (s/MB)",
+        "peak_mem_mb":             "Peak memory (MiB)",
         "decompression_latency_s": "Decompression latency (s)",
-        "query_latency_s":       "Query latency (s)",
-        "throughput_mb_s":       "Throughput (MB/s)",
+        "query_latency_s":         "Query latency (s)",
+        "throughput_mb_s":         "Throughput MB/s vs CSV (offline)",
+        "log_throughput_mb_s":     "Throughput MB/s vs raw log (offline)",
+        "cpu_throughput_mb_s":     "CPU throughput (MB/CPU-s)",
     }
     out_df = out_df.rename(columns={k: v for k, v in rename.items() if k in out_df.columns})
     out_df["Scenario"] = out_df["Scenario"].map(lambda s: SCENARIO_LABELS.get(s, s))

@@ -58,6 +58,8 @@ THREE_PASS=false
 SCENARIOS=(steady bursty fault-pod-crash-amf fault-memory-pressure-upf fault-network-delay-nrf)
 
 BASELINE_CSV="$RAW_BASE/steady/all_logs.csv"
+SALO_BASELINE_CSV="$SALO_RAW/steady/all_logs.csv"
+PREPROC_BASELINE_CSV="$PREPROC_RAW/steady/all_logs.csv"
 
 echo ""
 echo "============================================================"
@@ -68,13 +70,13 @@ echo "============================================================"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 measure_group() {
-    local scenario="$1" outdir="$2" original_csv="$3" out_file="$4"
-    shift 4
+    local scenario="$1" outdir="$2" original_csv="$3" out_file="$4" baseline="$5"
+    shift 5
     if [[ ! -f "$original_csv" ]]; then
         return
     fi
     local bl_arg=""
-    [[ -f "$BASELINE_CSV" ]] && bl_arg="--baseline $BASELINE_CSV"
+    [[ -f "$baseline" ]] && bl_arg="--baseline $baseline"
     # shellcheck disable=SC2086
     python3 "$SCRIPT_DIR/measure.py" \
         --original  "$original_csv" \
@@ -146,7 +148,7 @@ for scenario in "${SCENARIOS[@]}"; do
             [[ -f "$tl" ]] && TL_ARG="--timeline $tl"
             if [[ -n "$LS_ARG" || -n "$DN_ARG" ]]; then
                 measure_group "$scenario" "$outdir" "$offline_csv" \
-                    offline_metrics.json $LS_ARG $DN_ARG $TL_ARG
+                    offline_metrics.json "$BASELINE_CSV" $LS_ARG $DN_ARG $TL_ARG
             fi
         fi
 
@@ -158,7 +160,7 @@ for scenario in "${SCENARIOS[@]}"; do
             tl="$SALO_RAW/$scenario/timeline.json"
             [[ -f "$tl" ]] && TL_ARG="--timeline $tl"
             measure_group "$scenario" "$outdir" "$salo_csv" \
-                salo_metrics.json --salo-stream-dir "$salo_dir" $TL_ARG
+                salo_metrics.json "$SALO_BASELINE_CSV" --salo-stream-dir "$salo_dir" $TL_ARG
         fi
 
         # Group 3 — preproc vs pass-3 raw
@@ -169,7 +171,7 @@ for scenario in "${SCENARIOS[@]}"; do
             tl="$PREPROC_RAW/$scenario/timeline.json"
             [[ -f "$tl" ]] && TL_ARG="--timeline $tl"
             measure_group "$scenario" "$outdir" "$preproc_csv" \
-                preproc_metrics.json --preproc-stream-dir "$preproc_dir" $TL_ARG
+                preproc_metrics.json "$PREPROC_BASELINE_CSV" --preproc-stream-dir "$preproc_dir" $TL_ARG
         fi
 
         merge_metrics "$outdir" "$scenario"

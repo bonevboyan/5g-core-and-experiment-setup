@@ -89,6 +89,7 @@ SCENARIO_PALETTE = {
     "fault-network-delay-nrf":   "#009688",
 }
 
+FIGURE_EXT         = "png"
 FIGURE_DPI         = 150
 FIGURE_SIZE_SINGLE = (7, 4)
 FIGURE_SIZE_WIDE   = (10, 4)

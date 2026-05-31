@@ -27,6 +27,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+_PROCESS_START_TIME: float = time.time()
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Environment config
 # ──────────────────────────────────────────────────────────────────────────────
@@ -117,11 +119,19 @@ _MONGO_NORM_RE = re.compile(
     re.DOTALL,
 )
 
+_UERANSIM_RE = re.compile(
+    r'^\[(?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}\.\d+\]\s+'
+    r'\[(?P<component>[^\]]+)\]\s+'
+    r'\[(?P<level>\w+)\]\s*'
+    r'(?P<message>.*)',
+    re.DOTALL,
+)
+
 
 def parse_line(line: str) -> tuple:
     """Returns (level_str, level_ord, template)."""
     clean = _strip_ansi(line).strip()
-    m = _LOG_RE.match(clean) or _MONGO_NORM_RE.match(clean)
+    m = _LOG_RE.match(clean) or _MONGO_NORM_RE.match(clean) or _UERANSIM_RE.match(clean)
     if m:
         level = m.group("level").upper()
         tmpl = _make_template(m.group("message"))
@@ -136,9 +146,14 @@ def parse_line(line: str) -> tuple:
 # ──────────────────────────────────────────────────────────────────────────────
 
 _SALO_WINDOW_SECS       = 60
-_ERROR_FLAG_THRESHOLD   = 25
 _LOOKFORWARD_WINDOWS    = 2
-_RARITY_THRESHOLD       = 0.05   
+_RARITY_THRESHOLD       = 0.05
+_RARITY_MIN_WINDOWS     = 5     
+
+_BURST_EMA_ALPHA        = 0.3   
+_BURST_MULTIPLIER       = 2.5   
+_BURST_MIN_HISTORY      = 3     
+_BURST_ABS_MIN          = 5     
 
 CORE_NFS    = {"amf", "smf", "upf", "nrf"}
 SUPPORT_NFS = {"udm", "udr", "pcf", "ausf", "bsf", "nssf"}
@@ -157,6 +172,9 @@ def _location_tier(app: str) -> str:
     if a in CORE_NFS:          return "core"
     if a in SUPPORT_NFS:       return "support"
     if "mongo" in a or "db" in a: return "infrastructure"
+
+    if "gnb" in a or "ueransim" in a or a in {"ue", "ues"} or a.startswith("ue-"):
+        return "core"
     return "unknown"
 
 
@@ -172,12 +190,34 @@ class SALOFilter:
 
     def __init__(self, rare_templates: set = None):
         self.rare_templates = rare_templates or set()
-        self._error_counts: dict = defaultdict(int)
+        self._error_counts: dict = defaultdict(int)      
         self._flagged: dict = {}
-        self._tmpl_win_count: dict = defaultdict(int)  # template -> distinct windows seen
+        self._tmpl_win_count: dict = defaultdict(int)    
         self._total_windows: int = 0
         self._prev_window: int | None = None
         self._cur_win_tmpls: set = set()
+        self._app_prev_win: dict = {}                    
+        self._burst_ema: dict = {}                      
+        self._burst_ema_n: dict = defaultdict(int)       
+
+    def _commit_app_window(self, app: str, old_window: int) -> None:
+        """Incorporate old_window's error count into the per-app EMA."""
+        count = float(self._error_counts.get((app, old_window), 0))
+        n = self._burst_ema_n[app]
+        if n == 0:
+            self._burst_ema[app] = count
+        else:
+            self._burst_ema[app] = (
+                _BURST_EMA_ALPHA * count
+                + (1.0 - _BURST_EMA_ALPHA) * self._burst_ema[app]
+            )
+        self._burst_ema_n[app] = n + 1
+
+    def _burst_threshold(self, app: str) -> float:
+        """Error-count threshold above which the current window is flagged."""
+        if self._burst_ema_n.get(app, 0) < _BURST_MIN_HISTORY:
+            return float("inf")   
+        return max(self._burst_ema[app] * _BURST_MULTIPLIER, float(_BURST_ABS_MIN))
 
     def keep(self, app: str, ts_ns: int, line: str) -> bool:
         if app in EXCLUDE_APPS:
@@ -189,7 +229,6 @@ class SALOFilter:
         window = (ts_ns // 1_000_000_000) // _SALO_WINDOW_SECS
         _, lev_ord, tmpl = parse_line(line)
 
-        # Window transition — commit previous window's templates to history
         if self._prev_window is None:
             self._prev_window = window
         if window != self._prev_window:
@@ -200,9 +239,16 @@ class SALOFilter:
             self._prev_window = window
         self._cur_win_tmpls.add(tmpl)
 
+        app_prev = self._app_prev_win.get(app)
+        if app_prev is None:
+            self._app_prev_win[app] = window
+        elif window != app_prev:
+            self._commit_app_window(app, app_prev)
+            self._app_prev_win[app] = window
+
         if lev_ord >= LEVEL_ORDER["ERROR"]:
             self._error_counts[(app, window)] += 1
-            if self._error_counts[(app, window)] >= _ERROR_FLAG_THRESHOLD:
+            if self._error_counts[(app, window)] > self._burst_threshold(app):
                 for offset in range(_LOOKFORWARD_WINDOWS + 1):
                     self._flagged[(app, window + offset)] = True
 
@@ -215,8 +261,7 @@ class SALOFilter:
         if tmpl in self.rare_templates:
             return True
 
-        # Dynamic rarity: keep templates that rarely appeared in completed windows
-        if self._total_windows > 0:
+        if self._total_windows >= _RARITY_MIN_WINDOWS:
             freq = self._tmpl_win_count.get(tmpl, 0) / self._total_windows
             if freq < _RARITY_THRESHOLD:
                 return True
@@ -281,24 +326,20 @@ class PreprocFilter:
         _, _, tmpl = parse_line(line)
         tid = self._tid(tmpl)
 
-        # Evict state from windows that have long passed
         self._evict(win_t, self._seen_temporal)
         self._evict(win_t, self._seen_spatial)
         self._evict(win_a, self._win_active_tids)
 
-        # Temporal dedup  
         t_key = (pod, tid)
         if t_key in self._seen_temporal.get(win_t, ()):
             return False
         self._seen_temporal.setdefault(win_t, set()).add(t_key)
 
-        # Spatial dedup
         s_key = (app, tid)
         if s_key in self._seen_spatial.get(win_t, ()):
             return False
         self._seen_spatial.setdefault(win_t, set()).add(s_key)
 
-        # Static rules
         if self._effect_tids and tid in self._effect_tids:
             causes = self._effect_to_causes[tid]
             active = self._win_active_tids.get(win_a, ())
@@ -367,31 +408,65 @@ class PodTailer:
         self._fh  = None
         self._inode: int = -1
 
-    def _open(self):
+    def _open(self, read_from_start: bool = False):
         try:
-            self._fh    = open(self.path, "r", errors="replace")
-            self._fh.seek(0, 2)            
-            self._inode = os.stat(self.path).st_ino
+            st = os.stat(self.path)
+            self._fh = open(self.path, "r", errors="replace")
+
+            if not read_from_start and st.st_mtime < _PROCESS_START_TIME:
+                self._fh.seek(0, 2)
+            self._inode = st.st_ino
         except OSError:
             self._fh = None
+
+    def _drain(self) -> list:
+        """Read and filter any remaining content from the current file handle."""
+        kept = []
+        if self._fh is None:
+            return kept
+        try:
+            for raw in self._fh:
+                raw = raw.rstrip("\n")
+                try:
+                    entry = json.loads(raw)
+                    line  = entry.get("log", raw).rstrip("\n")
+                    ts_ns = _parse_kubelet_ts(entry.get("time", ""))
+                except (json.JSONDecodeError, ValueError):
+                    parts = raw.split(" ", 3)
+                    if len(parts) >= 4:
+                        ts_ns = _parse_kubelet_ts(parts[0])
+                        line  = parts[3]
+                    else:
+                        ts_ns = time.time_ns()
+                        line  = raw
+                if self.filter_fn(self.pod, self.app, ts_ns, line):
+                    kept.append((str(ts_ns), _strip_ansi(line)))
+        except OSError:
+            pass
+        return kept
 
     def read_new(self) -> list:
         """Return kept (ts_ns_str, line) pairs from newly appended log data."""
         if self._fh is None:
-            self._open()
+            self._open(read_from_start=True)
             if self._fh is None:
                 return []
 
         try:
             cur_inode = os.stat(self.path).st_ino
         except OSError:
-            return []
-
-        if cur_inode != self._inode:     
+            kept = self._drain()
             self._fh.close()
-            self._open()
+            self._fh = None
+            return kept
+
+        if cur_inode != self._inode:
+            kept = self._drain()
+            self._fh.close()
+            self._open(read_from_start=True)
             if self._fh is None:
-                return []
+                return kept
+            return kept
 
         kept = []
         for raw in self._fh:
@@ -410,7 +485,7 @@ class PodTailer:
                     line  = raw
 
             if self.filter_fn(self.pod, self.app, ts_ns, line):
-                kept.append((str(ts_ns), line))
+                kept.append((str(ts_ns), _strip_ansi(line)))
 
         return kept
 
@@ -511,11 +586,17 @@ def main():
                         print(f"[filter-agent] +tracking  app={t.app}  {path}")
 
             # ── Read new lines; write to CSV ──────────────────────
+            dead = []
             for path, tailer in list(tailers.items()):
                 for ts_ns_str, line in tailer.read_new():
                     csv_writer.writerow([ts_ns_str, tailer.pod, tailer.app, line])
                     lines_written += 1
                     pending[(tailer.pod, tailer.app)].append((ts_ns_str, line))
+                if tailer._fh is None:
+                    dead.append(path)
+            for path in dead:
+                print(f"[filter-agent] -untracking app={tailers[path].app}  {path}")
+                del tailers[path]
 
             # ── Flush to Loki ─────────────
             now = time.monotonic()
