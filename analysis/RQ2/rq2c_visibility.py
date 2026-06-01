@@ -96,7 +96,7 @@ def plot_visibility_heatmap(df: pd.DataFrame):
                             fontsize=FONT_SIZE_TICK - 1)
 
     ax.set_title(
-        "RQ2c — Fault visibility retained after reduction (%)"
+        "RQ2c — Fault visibility retained after reduction (%)",
         fontsize=FONT_SIZE_TITLE,
     )
     ax.set_xlabel("Scenario", fontsize=FONT_SIZE_LABEL)

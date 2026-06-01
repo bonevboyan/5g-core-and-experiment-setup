@@ -81,7 +81,7 @@ def plot_reduction_pct(df: pd.DataFrame):
                        fontsize=FONT_SIZE_TICK, rotation=15, ha="right")
     ax.set_ylabel("Storage reduction (%)", fontsize=FONT_SIZE_LABEL)
     ax.set_title(
-        "RQ2a — Telemetry volume reduction by strategy and scenario"
+        "RQ2a — Telemetry volume reduction by strategy and scenario",
         fontsize=FONT_SIZE_TITLE,
     )
     ax.legend(fontsize=FONT_SIZE_LEGEND, loc="upper right")

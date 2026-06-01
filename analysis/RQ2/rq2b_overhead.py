@@ -80,7 +80,7 @@ def plot_cpu_time(df: pd.DataFrame):
                        fontsize=FONT_SIZE_TICK)
     ax.set_ylabel("CPU time (s)", fontsize=FONT_SIZE_LABEL)
     ax.set_title(
-        f"RQ2b — CPU time consumed by reduction {title_suffix}"
+        f"RQ2b — CPU time consumed by reduction {title_suffix}",
         fontsize=FONT_SIZE_TITLE,
     )
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)

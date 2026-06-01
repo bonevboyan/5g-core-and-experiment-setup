@@ -84,6 +84,7 @@ def plot_pareto_reduction_visibility(combined: pd.DataFrame):
         print("  [rq2d] No data for Pareto plot — skipping.")
         return
 
+    x_col = "reduction_pct"
     fig, ax = plt.subplots(figsize=FIGURE_SIZE_SQUARE, dpi=FIGURE_DPI)
 
     for strat in STRATEGIES:
