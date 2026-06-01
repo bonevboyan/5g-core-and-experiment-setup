@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-B-log-strategies/sidecar/collect.py
+B-log-strategies/daemonSet/collect.py
 
 Collect the output of the DaemonSet after an experiment
 window and write filtered.csv + metrics.json.
@@ -270,7 +270,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--strategy",   required=True, choices=["salo", "preproc"],
-                    help="Which sidecar stream to collect")
+                    help="Which stream to collect")
     ap.add_argument("--start",      type=int, required=True,
                     help="Window start (unix seconds)")
     ap.add_argument("--end",        type=int, required=True,

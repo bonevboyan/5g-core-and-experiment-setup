@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# B-log-strategies/sidecar/deploy.sh
+# B-log-strategies/daemonSet/deploy.sh
 #
 # Build, load, and deploy the streaming log-filter-agent DaemonSet(s).
 #
 # Usage:
-#   bash sidecar/deploy.sh                         
-#   bash sidecar/deploy.sh --strategy preproc
-#   bash sidecar/deploy.sh --strategy both         # deploy salo + preproc simultaneously
-#   bash sidecar/deploy.sh --data-dir <path>       # also re-export pre-trained data first
-#   bash sidecar/deploy.sh --teardown              # remove all sidecar DaemonSets
+#   bash daemonSet/deploy.sh                         
+#   bash daemonSet/deploy.sh --strategy preproc
+#   bash daemonSet/deploy.sh --strategy both         # deploy salo + preproc simultaneously
+#   bash daemonSet/deploy.sh --data-dir <path>       # also re-export pre-trained data first
+#   bash daemonSet/deploy.sh --teardown              # remove all DaemonSets
 #
 # When --strategy both is used, two DaemonSets are created:
 #   log-filter-agent-salo   
@@ -49,12 +49,12 @@ PRETRAINED_DIR="$SCRIPT_DIR/pretrained"
 # ──────────────────────────────────────────────────────────────────────────────
 
 if $TEARDOWN; then
-    echo "[sidecar] Removing all log-filter-agent DaemonSets ..."
+    echo "[daemonSet] Removing all log-filter-agent DaemonSets ..."
     kubectl delete daemonset  log-filter-agent         -n "$NAMESPACE" --ignore-not-found
     kubectl delete daemonset  log-filter-agent-salo    -n "$NAMESPACE" --ignore-not-found
     kubectl delete daemonset  log-filter-agent-preproc -n "$NAMESPACE" --ignore-not-found
     kubectl delete configmap  log-filter-pretrained    -n "$NAMESPACE" --ignore-not-found
-    echo "[sidecar] Removed."
+    echo "[daemonSet] Removed."
     exit 0
 fi
 
@@ -281,5 +281,5 @@ echo " log-filter-agent deployed  (strategy=$STRATEGY)"
 echo ""
 echo " Tail logs:  kubectl logs -n $NAMESPACE -l app=log-filter-agent -f"
 echo " Status:     kubectl get pods -n $NAMESPACE -l app=log-filter-agent"
-echo " Teardown:   bash sidecar/deploy.sh --teardown"
+echo " Teardown:   bash daemonSet/deploy.sh --teardown"
 echo "════════════════════════════════════════════════════════════"

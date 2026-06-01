@@ -7,7 +7,7 @@
 #
 # deploy.sh builds the image, loads it into kind,
 # creates the pretrained ConfigMap, and waits for rollout:
-#   bash sidecar/deploy.sh --strategy both --data-dir <data/B-log-strategies>
+#   bash daemonSet/deploy.sh --strategy both --data-dir <data/B-log-strategies>
 
 apiVersion: apps/v1
 kind: DaemonSet

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-B-log-strategies/sidecar/export_pretrained.py
+B-log-strategies/daemonSet/export_pretrained.py
 
 Extracts pre-trained data from the offline pipeline runs so the
 live filter_agent can load it at startup.
@@ -167,7 +167,7 @@ def main():
     ap.add_argument("--data-dir", required=True,
                     help="Path to data/experiments/B-log-strategies/")
     ap.add_argument("--out-dir",  default=str(SCRIPT_DIR / "pretrained"),
-                    help="Output directory (default: sidecar/pretrained/)")
+                    help="Output directory (default: daemonSet/pretrained/)")
     args = ap.parse_args()
 
     data_dir    = Path(args.data_dir)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-B-log-strategies/sidecar/filter_agent.py
+B-log-strategies/daemonSet/filter_agent.py
 
 Streaming log filter agent — runs as a Kubernetes DaemonSet.
 

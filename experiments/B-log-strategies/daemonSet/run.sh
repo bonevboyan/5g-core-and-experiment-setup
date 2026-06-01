@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# B-log-strategies/sidecar/run.sh
+# B-log-strategies/daemonSet/run.sh
 #
 # Deploys one or both streaming filter DaemonSets, runs every scenario with
-# the sidecars active (they tail /var/log/pods/ in real time), collects raw
+# the daemonSets active (they tail /var/log/pods/ in real time), collects raw
 # logs as ground truth plus the filtered Loki streams, then tears down.
 #
 # Strategy modes
-#   --strategy salo    — deploy + collect SALO sidecar only
-#   --strategy preproc — deploy + collect preprocessing sidecar only
+#   --strategy salo    — deploy + collect SALO daemonSet only
+#   --strategy preproc — deploy + collect preprocessing daemonSet only
 #   --strategy both    — deploy + collect both (default)
 #
 #
 # Output layout (example for --strategy salo --run-tag run-salo):
-#   $DATA_DIR/B-log-strategies/05-sidecar/run-salo/
+#   $DATA_DIR/B-log-strategies/05-daemonSet/run-salo/
 #     raw/<scenario>/all_logs.csv
 #     salo-stream/<scenario>/filtered.csv
 #                                        metrics.json
@@ -63,9 +63,9 @@ if [[ -z "$RUN_TAG" && "$STRATEGY" != "both" ]]; then
 fi
 
 if [[ -n "$RUN_TAG" ]]; then
-    SC_BASE="$OUT_BASE/05-sidecar/$RUN_TAG"
+    SC_BASE="$OUT_BASE/05-daemonSet/$RUN_TAG"
 else
-    SC_BASE="$OUT_BASE/05-sidecar"
+    SC_BASE="$OUT_BASE/05-daemonSet"
 fi
 RAW_BASE="$SC_BASE/raw"
 
@@ -79,8 +79,8 @@ collect_salo()   { [[ "$STRATEGY" == "salo"   || "$STRATEGY" == "both" ]]; }
 collect_preproc(){ [[ "$STRATEGY" == "preproc" || "$STRATEGY" == "both" ]]; }
 
 
-restart_sidecars() {
-    echo "[sidecar] Restarting DaemonSet(s) for clean filter state ..."
+restart_daemonSets() {
+    echo "[daemonSet] Restarting DaemonSet(s) for clean filter state ..."
     local agents=()
     collect_salo   && agents+=("log-filter-agent-salo")
     collect_preproc && agents+=("log-filter-agent-preproc")
@@ -177,7 +177,7 @@ run_fault_scenario() {
     echo "[reset] Bringing up cluster for $b_name..."
     bring_up_cluster
 
-    echo "[sidecar] Re-deploying filter-agent DaemonSet(s) after cluster restart..."
+    echo "[daemonSet] Re-deploying filter-agent DaemonSet(s) after cluster restart..."
     bash "$SCRIPT_DIR/deploy.sh" --strategy "$STRATEGY"
 
     mkdir -p "$raw_dir"
@@ -285,7 +285,7 @@ fi
 
 echo ""
 echo "============================================================"
-echo " B-05: Sidecar live evaluation  (strategy=$STRATEGY)"
+echo " B-05: daemonSet live evaluation  (strategy=$STRATEGY)"
 echo " output: $SC_BASE"
 echo " scenarios: steady  bursty  fault-pod-crash-amf"
 echo "            fault-memory-pressure-upf  fault-network-delay-nrf"
@@ -305,11 +305,11 @@ else
         echo "────────────────────────────────────────────────────────────"
         echo " Scenario: steady (${STEADY_DURATION}s, ${UE_COUNT} UEs)"
         echo "────────────────────────────────────────────────────────────"
-        reset_experiment_state "B-sidecar-steady" "$UE_COUNT"
+        reset_experiment_state "B-daemonSet-steady" "$UE_COUNT"
         scale_ues "$UE_COUNT"
         wait_for_pods_stable open5gs 120
-        restart_sidecars
-        log_experiment_start "B-sidecar-steady" "$RAW_BASE/steady"
+        restart_daemonSets
+        log_experiment_start "B-daemonSet-steady" "$RAW_BASE/steady"
 
         T0=$(now_ts)
         sleep_with_progress "$STEADY_DURATION" "steady"
@@ -325,10 +325,10 @@ else
         echo "────────────────────────────────────────────────────────────"
         echo " Scenario: bursty (${BURSTY_DURATION}s, UE scale cycles)"
         echo "────────────────────────────────────────────────────────────"
-        reset_experiment_state "B-sidecar-bursty" "$UE_COUNT"
+        reset_experiment_state "B-daemonSet-bursty" "$UE_COUNT"
         scale_ues "$UE_COUNT"
-        restart_sidecars
-        log_experiment_start "B-sidecar-bursty" "$RAW_BASE/bursty"
+        restart_daemonSets
+        log_experiment_start "B-daemonSet-bursty" "$RAW_BASE/bursty"
 
         T0=$(now_ts)
         BURSTY_END=$(( T0 + BURSTY_DURATION ))
@@ -384,7 +384,7 @@ fi
 
 echo ""
 echo "============================================================"
-echo " B-05 sidecar evaluation complete."
+echo " B-05 daemonSet evaluation complete."
 echo " Filtered CSVs : $SC_BASE"
 echo " Visibility    : $OUT_BASE/04-visibility"
 echo "============================================================"
