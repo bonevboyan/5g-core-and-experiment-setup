@@ -20,7 +20,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-SCENARIOS=(steady bursty fault-pod-crash-amf fault-memory-pressure-upf fault-network-delay-nrf)
+SCENARIOS=(steady bursty
+           fault-pod-crash-amf fault-memory-pressure-upf fault-network-delay-nrf
+           fault-network-partition-amf-scp fault-packet-loss-upf
+           fault-upf-infra-packet-loss fault-nrf-cascade fault-udm-pod-crash)
 
 PARSER_DIR="$SCRIPT_DIR/../cloned_repos/LogShrink/python_compression/parser"
 if [[ ! -x "$PARSER_DIR/THULR" ]]; then

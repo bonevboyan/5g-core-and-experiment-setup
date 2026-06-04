@@ -271,8 +271,9 @@ def main():
                     help="Path to timeline.json for fault-window metric")
     ap.add_argument("--logshrink-dir",      default=None)
     ap.add_argument("--denum-dir",          default=None)
-    ap.add_argument("--salo-stream-dir",    default=None)
+    ap.add_argument("--salo-stream-dir",   default=None)
     ap.add_argument("--preproc-stream-dir", default=None)
+    ap.add_argument("--drain-stream-dir",  default=None)
     ap.add_argument("--outdir",             required=True)
     ap.add_argument("--scenario",           default="unknown")
     ap.add_argument("--out-file",           default="visibility_metrics.json",
@@ -311,8 +312,9 @@ def main():
         results["strategies"][strat] = measure_visibility(
             original_rows, None, timeline, normal_templates)
 
-    for strat, strat_dir in [("salo-stream",    args.salo_stream_dir),
-                              ("preproc-stream", args.preproc_stream_dir)]:
+    for strat, strat_dir in [("salo-stream",   args.salo_stream_dir),
+                              ("preproc-stream", args.preproc_stream_dir),
+                              ("drain-stream",   args.drain_stream_dir)]:
         if strat_dir is None:
             continue
         filtered_csv = Path(strat_dir) / "filtered.csv"

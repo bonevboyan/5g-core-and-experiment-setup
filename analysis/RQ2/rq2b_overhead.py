@@ -27,8 +27,15 @@ from config import (
     STRATEGIES, SCENARIOS,
     FIGURE_DPI, FIGURE_EXT, FIGURE_SIZE_WIDE, FIGURE_SIZE_LARGE,
     FONT_SIZE_TITLE, FONT_SIZE_LABEL, FONT_SIZE_TICK, FONT_SIZE_LEGEND,
+    LOSSLESS_STRATEGIES,
 )
 from load_data import load_all_strategy_metrics
+
+_CPU_METHOD = {
+    s: "Offline batch\n(getrusage)" if s in LOSSLESS_STRATEGIES else "Live DaemonSet\n(Prometheus cgroup)"
+    for s in STRATEGIES
+}
+_HATCH = {s: "///" if s in LOSSLESS_STRATEGIES else "" for s in STRATEGIES}
 
 
 def _check_data(df: pd.DataFrame, label: str) -> bool:
@@ -67,7 +74,9 @@ def plot_cpu_time(df: pd.DataFrame):
     fig, ax = plt.subplots(figsize=FIGURE_SIZE_WIDE, dpi=FIGURE_DPI)
 
     bars = ax.bar(x, cpu_vals, 0.6,
-                  color=[PALETTE[s] for s in strats_present], alpha=0.85)
+                  color=[PALETTE[s] for s in strats_present],
+                  hatch=[_HATCH[s] for s in strats_present],
+                  alpha=0.85, edgecolor="white")
     for bar, v in zip(bars, cpu_vals):
         if not np.isnan(v):
             ax.text(bar.get_x() + bar.get_width() / 2,
@@ -85,6 +94,16 @@ def plot_cpu_time(df: pd.DataFrame):
     )
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
+
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor="grey", hatch="///", edgecolor="white",
+              label="Offline batch (getrusage)"),
+        Patch(facecolor="grey", hatch="", edgecolor="white",
+              label="Live DaemonSet (Prometheus cgroup)"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=FONT_SIZE_LEGEND - 1,
+              loc="upper right")
 
     fig.tight_layout()
     out = FIGURES_DIR / f"rq2b_cpu_time.{FIGURE_EXT}"
@@ -123,14 +142,17 @@ def plot_peak_memory(df: pd.DataFrame):
         offset = (i - n_strat / 2 + 0.5) * width
         ax.bar(x + offset, vals, width * 0.9,
                label=STRATEGY_LABELS[strat],
-               color=PALETTE[strat], alpha=0.85)
+               color=PALETTE[strat], hatch=_HATCH[strat],
+               alpha=0.85, edgecolor="white")
 
     ax.set_xticks(x)
     ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
                        fontsize=FONT_SIZE_TICK, rotation=15, ha="right")
     ax.set_ylabel("Peak RSS memory (MiB)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title("RQ2b — Peak memory usage per strategy and scenario",
-                 fontsize=FONT_SIZE_TITLE)
+    ax.set_title(
+        "RQ2b — Peak memory usage per strategy and scenario",
+        fontsize=FONT_SIZE_TITLE,
+    )
     ax.legend(fontsize=FONT_SIZE_LEGEND, loc="upper right")
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)
@@ -143,10 +165,10 @@ def plot_peak_memory(df: pd.DataFrame):
 
 
 # ---------------------------------------------------------------------------
-# Figure 3: Query latency 
+# Figure 3: Query latency + CPU throughput
 # ---------------------------------------------------------------------------
 
-def plot_query_latency(df: pd.DataFrame):
+def plot_query_latency_and_throughput(df: pd.DataFrame):
     steady = df[df["scenario"] == "steady"].copy()
     if steady.empty:
         steady = df.groupby("strategy").mean(numeric_only=True).reset_index()
@@ -160,35 +182,56 @@ def plot_query_latency(df: pd.DataFrame):
         if not steady[steady["strategy"] == s].empty else np.nan
         for s in strats_present
     ]
+    tput_vals = [
+        float(steady[steady["strategy"] == s]["cpu_throughput_mb_s"].values[0])
+        if s in steady["strategy"].values else np.nan
+        for s in strats_present
+    ]
 
-    if all(np.isnan(v) for v in latency_vals):
-        print("  [rq2b] No query_latency_s data — skipping.")
+    if all(np.isnan(v) for v in latency_vals) and all(np.isnan(v) for v in tput_vals):
+        print("  [rq2b] No query_latency_s or cpu_throughput_mb_s data — skipping.")
         return
 
-    x, width = np.arange(len(strats_present)), 0.5
-    fig, ax = plt.subplots(figsize=FIGURE_SIZE_WIDE, dpi=FIGURE_DPI)
+    x = np.arange(len(strats_present))
+    width = 0.5
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=FIGURE_SIZE_WIDE, dpi=FIGURE_DPI)
 
     for i, (s, v) in enumerate(zip(strats_present, latency_vals)):
         if np.isnan(v):
             continue
-        ax.bar(i, v, width, color=PALETTE[s], alpha=0.85)
-        ax.text(i, v * 1.12, f"{v:.4f}s",
-                ha="center", va="bottom", fontsize=FONT_SIZE_TICK - 1)
+        ax1.bar(i, v, width, color=PALETTE[s], alpha=0.85)
+        ax1.text(i, v * 1.12, f"{v:.4f}s",
+                 ha="center", va="bottom", fontsize=FONT_SIZE_TICK - 1)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([STRATEGY_LABELS[s] for s in strats_present],
+                        fontsize=FONT_SIZE_TICK)
+    ax1.set_ylabel("Query latency (s)", fontsize=FONT_SIZE_LABEL)
+    ax1.set_title(f"Query latency {title_suffix}", fontsize=FONT_SIZE_TITLE)
+    ax1.yaxis.grid(True, linestyle="--", alpha=0.5)
+    ax1.set_axisbelow(True)
 
-    ax.set_xticks(x)
-    ax.set_xticklabels([STRATEGY_LABELS[s] for s in strats_present],
-                       fontsize=FONT_SIZE_TICK)
-    ax.set_ylabel("Query latency (s)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title(
-        f"RQ2b — Query latency per strategy {title_suffix}\n"
-        "Lossless: decompression + scan.  Lossy: scan of filtered output only.",
-        fontsize=FONT_SIZE_TITLE,
-    )
-    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
-    ax.set_axisbelow(True)
+    bars = ax2.bar(x, tput_vals, width,
+                   color=[PALETTE[s] for s in strats_present],
+                   hatch=[_HATCH[s] for s in strats_present],
+                   alpha=0.85, edgecolor="white")
+    for bar, v in zip(bars, tput_vals):
+        if not np.isnan(v):
+            ax2.text(bar.get_x() + bar.get_width() / 2,
+                     bar.get_height() + 0.01,
+                     f"{v:.2f}",
+                     ha="center", va="bottom", fontsize=FONT_SIZE_TICK)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([STRATEGY_LABELS[s] for s in strats_present],
+                        fontsize=FONT_SIZE_TICK)
+    ax2.set_ylabel("MB of input processed per CPU-second", fontsize=FONT_SIZE_LABEL)
+    ax2.set_title(f"CPU throughput {title_suffix}", fontsize=FONT_SIZE_TITLE)
+    ax2.yaxis.grid(True, linestyle="--", alpha=0.5)
+    ax2.set_axisbelow(True)
 
+    fig.suptitle("RQ2b — Query latency and CPU throughput per strategy",
+                 fontsize=FONT_SIZE_TITLE, y=1.02)
     fig.tight_layout()
-    out = FIGURES_DIR / f"rq2b_query_latency.{FIGURE_EXT}"
+    out = FIGURES_DIR / f"rq2b_latency_throughput.{FIGURE_EXT}"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print(f"  [rq2b] Saved {out}")
@@ -249,60 +292,6 @@ def plot_cpu_per_mb(df: pd.DataFrame):
     print(f"  [rq2b] Saved {out}")
 
 
-# ---------------------------------------------------------------------------
-# Figure 4: Throughput (MB/s) per strategy
-# ---------------------------------------------------------------------------
-
-def plot_throughput(df: pd.DataFrame):
-    steady = df[df["scenario"] == "steady"].copy()
-    if steady.empty:
-        steady = df.groupby("strategy").mean(numeric_only=True).reset_index()
-        title_suffix = "(mean across scenarios)"
-    else:
-        title_suffix = "(steady-state)"
-
-    strats_present = [s for s in STRATEGIES if s in steady["strategy"].values]
-    tput_vals = []
-    for s in strats_present:
-        row = steady[steady["strategy"] == s]
-        col = "cpu_throughput_mb_s"
-        if row.empty or col not in row.columns:
-            tput_vals.append(np.nan)
-        else:
-            tput_vals.append(float(row[col].values[0]))
-
-    if all(np.isnan(v) for v in tput_vals):
-        print("  [rq2b] No cpu_throughput_mb_s data — skipping.")
-        return
-
-    x = np.arange(len(strats_present))
-    fig, ax = plt.subplots(figsize=FIGURE_SIZE_WIDE, dpi=FIGURE_DPI)
-
-    bars = ax.bar(x, tput_vals, 0.6,
-                  color=[PALETTE[s] for s in strats_present], alpha=0.85)
-    for bar, v in zip(bars, tput_vals):
-        if not np.isnan(v):
-            ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.01,
-                    f"{v:.2f}",
-                    ha="center", va="bottom", fontsize=FONT_SIZE_TICK)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels([STRATEGY_LABELS[s] for s in strats_present],
-                       fontsize=FONT_SIZE_TICK)
-    ax.set_ylabel("CPU throughput (MB / CPU-s)", fontsize=FONT_SIZE_LABEL)
-    ax.set_title(
-        f"RQ2b — Processing throughput per strategy {title_suffix}",
-        fontsize=FONT_SIZE_TITLE,
-    )
-    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
-    ax.set_axisbelow(True)
-
-    fig.tight_layout()
-    out = FIGURES_DIR / f"rq2b_throughput.{FIGURE_EXT}"
-    fig.savefig(out, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  [rq2b] Saved {out}")
 
 
 # ---------------------------------------------------------------------------
@@ -310,14 +299,21 @@ def plot_throughput(df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 
 def save_summary_table(df: pd.DataFrame):
-    cols = ["strategy_label", "scenario", "cpu_s", "cpu_per_mb",
+    cols = ["strategy_label", "strategy", "scenario", "cpu_s", "cpu_per_mb",
             "peak_mem_mb", "decompression_latency_s", "query_latency_s",
             "throughput_mb_s", "log_throughput_mb_s", "cpu_throughput_mb_s"]
     out_df = df[[c for c in cols if c in df.columns]].copy()
 
+    out_df["cpu_measurement"] = out_df["strategy"].map(
+        lambda s: "Offline batch (getrusage)" if s in LOSSLESS_STRATEGIES
+        else "Live DaemonSet (Prometheus cgroup)"
+    )
+    out_df = out_df.drop(columns=["strategy"])
+
     rename = {
         "strategy_label":          "Strategy",
         "scenario":                "Scenario",
+        "cpu_measurement":         "CPU measurement method",
         "cpu_s":                   "CPU time (s)",
         "cpu_per_mb":              "CPU time per MB (s/MB)",
         "peak_mem_mb":             "Peak memory (MiB)",
@@ -349,8 +345,7 @@ def run():
     save_summary_table(df)
     plot_cpu_time(df)
     plot_peak_memory(df)
-    plot_query_latency(df)
-    plot_throughput(df)
+    plot_query_latency_and_throughput(df)
     plot_cpu_per_mb(df)
     print("[rq2b] Done.")
 

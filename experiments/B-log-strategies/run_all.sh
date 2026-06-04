@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # B-log-strategies/run_all.sh
 #
-# Four-pass experiment runner - each pass is an independent scenario execution with its own ground truth.
+# Five-pass experiment runner - each pass is an independent scenario execution with its own ground truth.
 #
 #   Pass 1 — Raw collection → LogShrink + Denum
 #             CPU measured via getrusage during each apply.py run.
@@ -13,28 +13,35 @@
 #   Pass 3 — Preprocessing sidecar
 #             Same as Pass 2.
 #
-#   Pass 4 — Visibility + storage comparison across all strategies
+#   Pass 4 — Drain sidecar (online log-cluster dedup via Drain3)
+#             Same as Pass 2.
+#
+#   Pass 5 — Visibility + storage comparison across all strategies
 #             using each strategy's own ground truth.
 #
 # Output:
 #   $DATA_DIR/B-log-strategies/
-#     01-collect/<scenario>/          pass-1 
+#     01-collect/<scenario>/          pass-1
 #     02-logshrink/<scenario>/        LogShrink compressed output + metrics.json
 #     03-denum/<scenario>/            Denum compressed output + metrics.json
-#     05-sidecar/
+#     05-daemonSet/
 #       run-salo/<scenario>/          pass-2
 #         raw/all_logs.csv
-#         salo-stream/filtered.csv    metrics.json 
-#       run-preproc/<scenario>/       pass-3 
+#         salo-stream/filtered.csv    metrics.json
+#       run-preproc/<scenario>/       pass-3
 #         raw/all_logs.csv
 #         preproc-stream/filtered.csv
+#       run-drain/<scenario>/         pass-4
+#         raw/all_logs.csv
+#         drain-stream/filtered.csv
 #     04-visibility/<scenario>/visibility_metrics.json   merged comparison
 #
 # Usage:
-#   bash run_all.sh                      # full four-pass run (~4h 25m)
+#   bash run_all.sh                      # full run (~4h 30m)
 #   bash run_all.sh --from 2             # skip Pass 1, resume from SALO pass
+#   bash run_all.sh --from 5             # skip to visibility pass only
 #   bash run_all.sh --faults-only        # skip steady/bursty in all passes
-#   bash run_all.sh --base-faults-only   # faults only in Pass 1; Passes 2-3 run all scenarios
+#   bash run_all.sh --base-faults-only   # faults only in Pass 1; Passes 2-4 run all scenarios
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +81,8 @@ preflight() {
 }
 
 preflight
+
+git -C "$SCRIPT_DIR" submodule update --init --recursive
 
 BASE="$DATA_DIR/B-log-strategies"
 INTER_PASS_SLEEP=120  
@@ -117,8 +126,8 @@ fi
 # Pass 2 — SALO
 # ──────────────────────────────────────────────────────────────────────────────
 
-if run_pass 2 "SALO → $BASE/05-sidecar/run-salo/"; then
-    bash "$SCRIPT_DIR/sidecar/run.sh" \
+if run_pass 2 "SALO → $BASE/05-daemonSet/run-salo/"; then
+    bash "$SCRIPT_DIR/daemonSet/run.sh" \
         --strategy       salo \
         --run-tag        run-salo \
         --skip-visibility \
@@ -132,8 +141,8 @@ fi
 # Pass 3 — Preprocessing
 # ──────────────────────────────────────────────────────────────────────────────
 
-if run_pass 3 "Preprocessing → $BASE/05-sidecar/run-preproc/"; then
-    bash "$SCRIPT_DIR/sidecar/run.sh" \
+if run_pass 3 "Preprocessing → $BASE/05-daemonSet/run-preproc/"; then
+    bash "$SCRIPT_DIR/daemonSet/run.sh" \
         --strategy       preproc \
         --run-tag        run-preproc \
         --skip-visibility \
@@ -144,18 +153,35 @@ if run_pass 3 "Preprocessing → $BASE/05-sidecar/run-preproc/"; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Pass 4 — Visibility comparison 
+# Pass 4 — Drain
 # ──────────────────────────────────────────────────────────────────────────────
 
-if run_pass 4 "Visibility comparison"; then
+if run_pass 4 "Drain → $BASE/05-daemonSet/run-drain/"; then
+    bash "$SCRIPT_DIR/daemonSet/run.sh" \
+        --strategy       drain \
+        --run-tag        run-drain \
+        --skip-visibility \
+        $SIDECAR_ARGS
+    echo ""
+    echo "[done] Pass 4 complete. Cooling down ${INTER_PASS_SLEEP}s ..."
+    sleep "$INTER_PASS_SLEEP"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pass 5 — Visibility comparison
+# ──────────────────────────────────────────────────────────────────────────────
+
+if run_pass 5 "Visibility comparison"; then
     bash "$SCRIPT_DIR/04-visibility/run.sh" \
         --raw-base            "$BASE/01-collect" \
-        --salo-raw-base       "$BASE/05-sidecar/run-salo/raw" \
-        --preproc-raw-base    "$BASE/05-sidecar/run-preproc/raw" \
+        --salo-raw-base       "$BASE/05-daemonSet/run-salo/raw" \
+        --preproc-raw-base    "$BASE/05-daemonSet/run-preproc/raw" \
+        --drain-raw-base      "$BASE/05-daemonSet/run-drain/raw" \
         --logshrink-base      "$BASE/02-logshrink" \
         --denum-base          "$BASE/03-denum" \
-        --salo-stream-base    "$BASE/05-sidecar/run-salo/salo-stream" \
-        --preproc-stream-base "$BASE/05-sidecar/run-preproc/preproc-stream"
+        --salo-stream-base    "$BASE/05-daemonSet/run-salo/salo-stream" \
+        --preproc-stream-base "$BASE/05-daemonSet/run-preproc/preproc-stream" \
+        --drain-stream-base   "$BASE/05-daemonSet/run-drain/drain-stream"
 fi
 
 echo ""

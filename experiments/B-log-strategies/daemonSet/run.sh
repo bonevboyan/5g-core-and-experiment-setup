@@ -53,8 +53,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$STRATEGY" != "salo" && "$STRATEGY" != "preproc" && "$STRATEGY" != "both" ]]; then
-    echo "ERROR: --strategy must be salo, preproc, or both"
+if [[ "$STRATEGY" != "salo" && "$STRATEGY" != "preproc" && "$STRATEGY" != "drain" && "$STRATEGY" != "both" ]]; then
+    echo "ERROR: --strategy must be salo, preproc, drain, or both"
     exit 1
 fi
 
@@ -75,15 +75,17 @@ RAW_BASE="$SC_BASE/raw"
 
 should_run() { [[ -z "$ONLY_SCENARIO" || "$ONLY_SCENARIO" == "$1" ]]; }
 
-collect_salo()   { [[ "$STRATEGY" == "salo"   || "$STRATEGY" == "both" ]]; }
-collect_preproc(){ [[ "$STRATEGY" == "preproc" || "$STRATEGY" == "both" ]]; }
+collect_salo()    { [[ "$STRATEGY" == "salo"    || "$STRATEGY" == "both" ]]; }
+collect_preproc() { [[ "$STRATEGY" == "preproc" || "$STRATEGY" == "both" ]]; }
+collect_drain()   { [[ "$STRATEGY" == "drain" ]]; }
 
 
 restart_daemonSets() {
     echo "[daemonSet] Restarting DaemonSet(s) for clean filter state ..."
     local agents=()
-    collect_salo   && agents+=("log-filter-agent-salo")
+    collect_salo    && agents+=("log-filter-agent-salo")
     collect_preproc && agents+=("log-filter-agent-preproc")
+    collect_drain   && agents+=("log-filter-agent-drain")
     for ds in "${agents[@]}"; do
         kubectl rollout restart daemonset/"$ds" -n open5gs 2>/dev/null || true
         kubectl rollout status  daemonset/"$ds" -n open5gs --timeout=60s 2>/dev/null || true
@@ -163,6 +165,19 @@ collect_scenario() {
             --raw-csv "$raw_dir/all_logs.csv" \
             ${PROM_URL:+--prom-url "$PROM_URL"}
     fi
+
+    if collect_drain; then
+        local drain_dir="$SC_BASE/drain-stream/$scenario"
+        mkdir -p "$drain_dir"
+        echo "[collect] $scenario  drain-stream ..."
+        python3 "$SCRIPT_DIR/collect.py" \
+            --url "$LOKI_URL" --strategy drain \
+            --start "$t0" --end "$t1" \
+            --out "$drain_dir" --scenario "$scenario" \
+            --raw-csv "$raw_dir/all_logs.csv" \
+            ${PROM_URL:+--prom-url "$PROM_URL"}
+    fi
+
 }
 
 run_fault_scenario() {
@@ -234,10 +249,12 @@ run_fault_scenario() {
             --url "$LOKI_URL" --start "$t0" --end "$t1" --out "$raw_dir"
     fi
 
-    collect_salo   && { mkdir -p "$SC_BASE/salo-stream/$b_name";
-                        cp "$raw_dir/timeline.json" "$SC_BASE/salo-stream/$b_name/timeline.json"; }
+    collect_salo    && { mkdir -p "$SC_BASE/salo-stream/$b_name";
+                         cp "$raw_dir/timeline.json" "$SC_BASE/salo-stream/$b_name/timeline.json"; }
     collect_preproc && { mkdir -p "$SC_BASE/preproc-stream/$b_name";
-                        cp "$raw_dir/timeline.json" "$SC_BASE/preproc-stream/$b_name/timeline.json"; }
+                         cp "$raw_dir/timeline.json" "$SC_BASE/preproc-stream/$b_name/timeline.json"; }
+    collect_drain   && { mkdir -p "$SC_BASE/drain-stream/$b_name";
+                         cp "$raw_dir/timeline.json" "$SC_BASE/drain-stream/$b_name/timeline.json"; }
 
     local t0 t1
     t0=$(python3 -c "import json; d=json.load(open('$raw_dir/timeline.json')); print(d['pre']['start'])")
@@ -260,6 +277,16 @@ run_fault_scenario() {
             --url "$LOKI_URL" --strategy preproc \
             --start "$t0" --end "$t1" \
             --out "$SC_BASE/preproc-stream/$b_name" --scenario "$b_name" \
+            --raw-csv "$raw_dir/all_logs.csv" \
+            ${PROM_URL:+--prom-url "$PROM_URL"}
+    fi
+
+    if collect_drain; then
+        echo "[collect] $b_name  drain-stream ..."
+        python3 "$SCRIPT_DIR/collect.py" \
+            --url "$LOKI_URL" --strategy drain \
+            --start "$t0" --end "$t1" \
+            --out "$SC_BASE/drain-stream/$b_name" --scenario "$b_name" \
             --raw-csv "$raw_dir/all_logs.csv" \
             ${PROM_URL:+--prom-url "$PROM_URL"}
     fi
@@ -287,8 +314,10 @@ echo ""
 echo "============================================================"
 echo " B-05: daemonSet live evaluation  (strategy=$STRATEGY)"
 echo " output: $SC_BASE"
-echo " scenarios: steady  bursty  fault-pod-crash-amf"
-echo "            fault-memory-pressure-upf  fault-network-delay-nrf"
+echo " scenarios: steady  bursty"
+echo "            fault-pod-crash-amf  fault-memory-pressure-upf  fault-network-delay-nrf"
+echo "            fault-network-partition-amf-scp  fault-packet-loss-upf"
+echo "            fault-upf-infra-packet-loss  fault-nrf-cascade  fault-udm-pod-crash"
 echo "============================================================"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -353,9 +382,14 @@ else
 fi  
 
 # Fault scenarios
-if should_run fault-pod-crash-amf;       then run_fault_scenario fault-pod-crash-amf       03-pod-crash-amf.yaml;       fi
-if should_run fault-memory-pressure-upf; then run_fault_scenario fault-memory-pressure-upf 02-memory-pressure-upf.yaml; fi
-if should_run fault-network-delay-nrf;   then run_fault_scenario fault-network-delay-nrf   09-network-delay-nrf.yaml;   fi
+if should_run fault-pod-crash-amf;            then run_fault_scenario fault-pod-crash-amf            03-pod-crash-amf.yaml;                    fi
+if should_run fault-memory-pressure-upf;      then run_fault_scenario fault-memory-pressure-upf      02-memory-pressure-upf.yaml;              fi
+if should_run fault-network-delay-nrf;        then run_fault_scenario fault-network-delay-nrf        09-network-delay-nrf.yaml;                fi
+if should_run fault-network-partition-amf-scp; then run_fault_scenario fault-network-partition-amf-scp 05-network-partition-amf-scp.yaml;      fi
+if should_run fault-packet-loss-upf;          then run_fault_scenario fault-packet-loss-upf          06-packet-loss-upf.yaml;                  fi
+if should_run fault-upf-infra-packet-loss;    then run_fault_scenario fault-upf-infra-packet-loss    14-upf-infrastructure-packet-loss.yaml;   fi
+if should_run fault-nrf-cascade;              then run_fault_scenario fault-nrf-cascade              15-nrf-cascade.yaml;                      fi
+if should_run fault-udm-pod-crash;            then run_fault_scenario fault-udm-pod-crash            19-udm-pod-crash.yaml;                    fi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Teardown

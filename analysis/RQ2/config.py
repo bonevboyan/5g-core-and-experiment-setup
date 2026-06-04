@@ -20,13 +20,14 @@ TABLES_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 # Experiment layout
 # ---------------------------------------------------------------------------
-STRATEGIES = ["logshrink", "denum", "salo", "preprocessing"]
+STRATEGIES = ["logshrink", "denum", "salo", "preprocessing", "drain"]
 
 STRATEGY_DIRS = {
     "logshrink":     DATA_ROOT / "02-logshrink",
     "denum":         DATA_ROOT / "03-denum",
-    "salo":          DATA_ROOT / "05-sidecar" / "run-salo"    / "salo-stream",
-    "preprocessing": DATA_ROOT / "05-sidecar" / "run-preproc" / "preproc-stream",
+    "salo":          DATA_ROOT / "05-daemonSet" / "run-salo"    / "salo-stream",
+    "preprocessing": DATA_ROOT / "05-daemonSet" / "run-preproc" / "preproc-stream",
+    "drain":         DATA_ROOT / "05-daemonSet" / "run-drain"   / "drain-stream",
 }
 
 VISIBILITY_DIR = DATA_ROOT / "04-visibility"
@@ -36,6 +37,7 @@ VISIBILITY_KEYS = {
     "denum":         "denum",
     "salo":          "salo-stream",
     "preprocessing": "preproc-stream",
+    "drain":         "drain-stream",
 }
 
 STRATEGY_FROM_VIS_KEY = {v: k for k, v in VISIBILITY_KEYS.items()}
@@ -46,20 +48,35 @@ SCENARIOS = [
     "fault-pod-crash-amf",
     "fault-memory-pressure-upf",
     "fault-network-delay-nrf",
+    "fault-network-partition-amf-scp",
+    "fault-packet-loss-upf",
+    "fault-upf-infra-packet-loss",
+    "fault-nrf-cascade",
+    "fault-udm-pod-crash",
 ]
 
 FAULT_SCENARIOS = [
     "fault-pod-crash-amf",
     "fault-memory-pressure-upf",
     "fault-network-delay-nrf",
+    "fault-network-partition-amf-scp",
+    "fault-packet-loss-upf",
+    "fault-upf-infra-packet-loss",
+    "fault-nrf-cascade",
+    "fault-udm-pod-crash",
 ]
 
 SCENARIO_LABELS = {
-    "steady":                    "Steady-state",
-    "bursty":                    "Bursty",
-    "fault-pod-crash-amf":       "Fault: pod crash (AMF)",
-    "fault-memory-pressure-upf": "Fault: mem pressure (UPF)",
-    "fault-network-delay-nrf":   "Fault: net delay (NRF)",
+    "steady":                          "Steady-state",
+    "bursty":                          "Bursty",
+    "fault-pod-crash-amf":             "Fault: pod crash (AMF)",
+    "fault-memory-pressure-upf":       "Fault: mem pressure (UPF)",
+    "fault-network-delay-nrf":         "Fault: net delay (NRF)",
+    "fault-network-partition-amf-scp": "Fault: net partition (AMF-SCP)",
+    "fault-packet-loss-upf":           "Fault: packet loss (UPF)",
+    "fault-upf-infra-packet-loss":     "Fault: infra pkt loss (UPF)",
+    "fault-nrf-cascade":               "Fault: NRF cascade",
+    "fault-udm-pod-crash":             "Fault: pod crash (UDM)",
 }
 
 STRATEGY_LABELS = {
@@ -67,26 +84,33 @@ STRATEGY_LABELS = {
     "denum":         "Denum",
     "salo":          "SALO",
     "preprocessing": "Log Preprocessing",
+    "drain":         "Drain",
 }
 LOSSLESS_STRATEGIES  = {"logshrink", "denum"}
-LOSSY_STRATEGIES     = {"salo", "preprocessing"}
+LOSSY_STRATEGIES     = {"salo", "preprocessing", "drain"}
 
 # ---------------------------------------------------------------------------
 # Plot styling
 # ---------------------------------------------------------------------------
 PALETTE = {
-    "logshrink":     "#1565C0",   
-    "denum":         "#E65100",   
-    "salo":          "#2E7D32", 
-    "preprocessing": "#6A1B9A",   
+    "logshrink":     "#1565C0",
+    "denum":         "#E65100",
+    "salo":          "#2E7D32",
+    "preprocessing": "#6A1B9A",
+    "drain":         "#00838F",
 }
 
 SCENARIO_PALETTE = {
-    "steady":                    "#2196F3",
-    "bursty":                    "#FF9800",
-    "fault-pod-crash-amf":       "#F44336",
-    "fault-memory-pressure-upf": "#9C27B0",
-    "fault-network-delay-nrf":   "#009688",
+    "steady":                          "#2196F3",
+    "bursty":                          "#FF9800",
+    "fault-pod-crash-amf":             "#F44336",
+    "fault-memory-pressure-upf":       "#9C27B0",
+    "fault-network-delay-nrf":         "#009688",
+    "fault-network-partition-amf-scp": "#C62828",
+    "fault-packet-loss-upf":           "#AD1457",
+    "fault-upf-infra-packet-loss":     "#6D4C41",
+    "fault-nrf-cascade":               "#558B2F",
+    "fault-udm-pod-crash":             "#1565C0",
 }
 
 FIGURE_EXT         = "png"

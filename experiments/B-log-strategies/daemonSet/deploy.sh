@@ -50,10 +50,11 @@ PRETRAINED_DIR="$SCRIPT_DIR/pretrained"
 
 if $TEARDOWN; then
     echo "[daemonSet] Removing all log-filter-agent DaemonSets ..."
-    kubectl delete daemonset  log-filter-agent         -n "$NAMESPACE" --ignore-not-found
-    kubectl delete daemonset  log-filter-agent-salo    -n "$NAMESPACE" --ignore-not-found
-    kubectl delete daemonset  log-filter-agent-preproc -n "$NAMESPACE" --ignore-not-found
-    kubectl delete configmap  log-filter-pretrained    -n "$NAMESPACE" --ignore-not-found
+    kubectl delete daemonset  log-filter-agent          -n "$NAMESPACE" --ignore-not-found
+    kubectl delete daemonset  log-filter-agent-salo     -n "$NAMESPACE" --ignore-not-found
+    kubectl delete daemonset  log-filter-agent-preproc  -n "$NAMESPACE" --ignore-not-found
+    kubectl delete daemonset  log-filter-agent-drain    -n "$NAMESPACE" --ignore-not-found
+    kubectl delete configmap  log-filter-pretrained     -n "$NAMESPACE" --ignore-not-found
     echo "[daemonSet] Removed."
     exit 0
 fi
@@ -62,8 +63,8 @@ fi
 # Preflight
 # ──────────────────────────────────────────────────────────────────────────────
 
-if [[ "$STRATEGY" != "salo" && "$STRATEGY" != "preproc" && "$STRATEGY" != "both" ]]; then
-    echo "ERROR: --strategy must be 'salo', 'preproc', or 'both'"
+if [[ "$STRATEGY" != "salo" && "$STRATEGY" != "preproc" && "$STRATEGY" != "drain" && "$STRATEGY" != "both" ]]; then
+    echo "ERROR: --strategy must be 'salo', 'preproc', 'drain', or 'both'"
     exit 1
 fi
 
@@ -129,23 +130,19 @@ echo "════════════════════════�
 echo " Step 4: ConfigMap log-filter-pretrained"
 echo "════════════════════════════════════════════════════════════"
 
-RARE_FILE="$PRETRAINED_DIR/rare_templates.json"
-RULES_FILE="$PRETRAINED_DIR/static_rules.json"
-
 CM_ARGS=()
-[[ -f "$RARE_FILE"  ]] && CM_ARGS+=(--from-file=rare_templates.json="$RARE_FILE")
-[[ -f "$RULES_FILE" ]] && CM_ARGS+=(--from-file=static_rules.json="$RULES_FILE")
+for fname in rare_templates.json static_rules.json; do
+    fpath="$PRETRAINED_DIR/$fname"
+    [[ -f "$fpath" ]] && CM_ARGS+=(--from-file="${fname}=${fpath}")
+done
 
+kubectl create configmap log-filter-pretrained \
+    "${CM_ARGS[@]}" -n "$NAMESPACE" \
+    --dry-run=client -o yaml | kubectl apply -f -
 if [[ ${#CM_ARGS[@]} -gt 0 ]]; then
-    kubectl create configmap log-filter-pretrained \
-        "${CM_ARGS[@]}" -n "$NAMESPACE" \
-        --dry-run=client -o yaml | kubectl apply -f -
     echo "  loaded: ${CM_ARGS[*]}"
 else
-    kubectl create configmap log-filter-pretrained \
-        -n "$NAMESPACE" \
-        --dry-run=client -o yaml | kubectl apply -f -
-    echo "  (no pretrained files — agent will run without them)"
+    echo "  (no pretrained files found — agent will start without them)"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,14 +157,6 @@ echo "════════════════════════�
 deploy_one() {
     local strat="$1"        # salo | preproc
     local ds_name="log-filter-agent-${strat}"
-
-    local env_pretrained=""
-    if [[ "$strat" == "salo"   && -f "$RARE_FILE"  ]]; then
-        env_pretrained=$'\n            - name: RARE_TEMPLATES_JSON\n              value: /pretrained/rare_templates.json'
-    fi
-    if [[ "$strat" == "preproc" && -f "$RULES_FILE" ]]; then
-        env_pretrained=$'\n            - name: STATIC_RULES_JSON\n              value: /pretrained/static_rules.json'
-    fi
 
     kubectl apply -f - <<EOF
 apiVersion: apps/v1
@@ -210,7 +199,11 @@ spec:
             - name: BATCH_LINES
               value: "200"
             - name: POLL_INTERVAL_S
-              value: "0.25"${env_pretrained}
+              value: "0.25"
+            - name: RARE_TEMPLATES_JSON
+              value: /pretrained/rare_templates.json
+            - name: STATIC_RULES_JSON
+              value: /pretrained/static_rules.json
           volumeMounts:
             - name: podlogs
               mountPath: /var/log/pods
@@ -235,6 +228,7 @@ spec:
         - name: pretrained
           configMap:
             name: log-filter-pretrained
+            optional: true
         - name: output
           emptyDir: {}
       terminationGracePeriodSeconds: 5

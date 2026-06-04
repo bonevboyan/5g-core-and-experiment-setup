@@ -269,7 +269,7 @@ def collect_from_pods(strategy: str, namespace: str,
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--strategy",   required=True, choices=["salo", "preproc"],
+    ap.add_argument("--strategy",   required=True, choices=["salo", "preproc", "drain"],
                     help="Which stream to collect")
     ap.add_argument("--start",      type=int, required=True,
                     help="Window start (unix seconds)")

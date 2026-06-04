@@ -12,6 +12,7 @@ Strategies
 ----------
   salo    — SALO two-level filter (tier threshold + adaptive error-burst flagging)
   preproc — Preprocessing Steps 1+2 (template dedup: temporal + spatial)
+  drain   — Drain online log-cluster dedup (one pass per cluster per window)
 """
 
 import csv
@@ -26,8 +27,6 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-
-_PROCESS_START_TIME: float = time.time()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Environment config
@@ -351,7 +350,86 @@ class PreprocFilter:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Loki push 
+# Drain 
+# ──────────────────────────────────────────────────────────────────────────────
+
+_DRAIN_WINDOW_SECS  = 15   
+_DRAIN_DEPTH        = 4
+_DRAIN_SIM_TH       = 0.4
+_DRAIN_MAX_CLUSTERS = 500
+
+
+class DrainFilter:
+    """
+    Online log filter using the Drain log-parsing algorithm.
+
+    Each line is assigned to a template cluster.
+    A line is kept when:
+      - level >= ERROR (always), or
+      - its cluster is new / its template just changed (structural novelty), or
+      - its cluster has not appeared from the same app in _DRAIN_WINDOW_SECS.
+
+    Separate miners per app prevent cross-contamination of templates between
+    different 5G network functions.
+    """
+
+    def __init__(self):
+        try:
+            from drain3.template_miner import TemplateMiner
+            from drain3.template_miner_config import TemplateMinerConfig
+        except ImportError as exc:
+            raise ImportError(
+                "drain3 is required for the 'drain' strategy: pip install drain3"
+            ) from exc
+        self._TemplateMiner = TemplateMiner
+        self._Config        = TemplateMinerConfig
+        self._miners: dict  = {}         
+        self._last_seen: dict = {}       
+
+    def _miner(self, app: str):
+        if app not in self._miners:
+            cfg = self._Config()
+            cfg.drain_depth            = _DRAIN_DEPTH
+            cfg.drain_sim_th           = _DRAIN_SIM_TH
+            cfg.drain_max_clusters     = _DRAIN_MAX_CLUSTERS
+            cfg.parametrize_numeric_tokens = True
+            self._miners[app] = self._TemplateMiner(config=cfg)
+        return self._miners[app]
+
+    def keep(self, pod: str, app: str, ts_ns: int, line: str) -> bool:
+        if app in EXCLUDE_APPS:
+            return False
+
+        if app == "mongodb":
+            line = _normalize_mongodb(line)
+
+        _, lev_ord, _ = parse_line(line)
+
+        if lev_ord >= LEVEL_ORDER["ERROR"]:
+            return True
+
+        clean = _strip_ansi(line).strip()
+        try:
+            result = self._miner(app).add_log_message(clean)
+        except Exception:
+            return True   
+
+        cluster_id  = result["cluster_id"]
+        change_type = result.get("change_type")   
+
+        secs = ts_ns // 1_000_000_000
+        key  = (app, cluster_id)
+        last = self._last_seen.get(key)
+        self._last_seen[key] = secs
+
+        if change_type != "none":
+            return True
+
+        return last is None or (secs - last) >= _DRAIN_WINDOW_SECS
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Loki push
 # ──────────────────────────────────────────────────────────────────────────────
 
 def loki_push(streams: list) -> bool:
@@ -408,13 +486,10 @@ class PodTailer:
         self._fh  = None
         self._inode: int = -1
 
-    def _open(self, read_from_start: bool = False):
+    def _open(self):
         try:
             st = os.stat(self.path)
             self._fh = open(self.path, "r", errors="replace")
-
-            if not read_from_start and st.st_mtime < _PROCESS_START_TIME:
-                self._fh.seek(0, 2)
             self._inode = st.st_ino
         except OSError:
             self._fh = None
@@ -448,7 +523,7 @@ class PodTailer:
     def read_new(self) -> list:
         """Return kept (ts_ns_str, line) pairs from newly appended log data."""
         if self._fh is None:
-            self._open(read_from_start=True)
+            self._open()
             if self._fh is None:
                 return []
 
@@ -463,7 +538,7 @@ class PodTailer:
         if cur_inode != self._inode:
             kept = self._drain()
             self._fh.close()
-            self._open(read_from_start=True)
+            self._open()
             if self._fh is None:
                 return kept
             return kept
@@ -534,8 +609,13 @@ def build_filter(strategy: str):
         filt = PreprocFilter(static_rules=rules or None)
         return lambda pod, app, ts_ns, line: filt.keep(pod, app, ts_ns, line)
 
+    elif strategy == "drain":
+        filt = DrainFilter()
+        return lambda pod, app, ts_ns, line: filt.keep(pod, app, ts_ns, line)
+
     else:
-        raise ValueError(f"Unknown FILTER_STRATEGY={strategy!r}  (use 'salo' or 'preproc')")
+        raise ValueError(f"Unknown FILTER_STRATEGY={strategy!r}  "
+                         f"(use 'salo', 'preproc', or 'drain')")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

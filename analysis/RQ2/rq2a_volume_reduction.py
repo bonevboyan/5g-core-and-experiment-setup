@@ -121,9 +121,9 @@ def plot_storage_bytes(df: pd.DataFrame):
     fig, ax = plt.subplots(figsize=FIGURE_SIZE_WIDE, dpi=FIGURE_DPI)
 
     in_bytes  = [steady[steady["strategy"] == s]["input_bytes"].values[0]
-                 / (1024 ** 2) for s in strategies_present]
+                 / 1024 for s in strategies_present]
     out_bytes = [steady[steady["strategy"] == s]["output_bytes"].values[0]
-                 / (1024 ** 2) for s in strategies_present]
+                 / 1024 for s in strategies_present]
 
     bars_in  = ax.bar(x - width / 2, in_bytes, width,
                       label="Input (Loki CSV)", color="#90A4AE", alpha=0.9)
@@ -141,7 +141,7 @@ def plot_storage_bytes(df: pd.DataFrame):
     ax.set_xticks(x)
     ax.set_xticklabels([STRATEGY_LABELS[s] for s in strategies_present],
                        fontsize=FONT_SIZE_TICK)
-    ax.set_ylabel("Storage (MiB)", fontsize=FONT_SIZE_LABEL)
+    ax.set_ylabel("Storage (KiB)", fontsize=FONT_SIZE_LABEL)
     ax.set_title(
         f"RQ2a — Storage before and after reduction {title_suffix}",
         fontsize=FONT_SIZE_TITLE,
@@ -192,7 +192,7 @@ def plot_line_reduction(df: pd.DataFrame):
                         label=STRATEGY_LABELS[strat],
                         color=PALETTE[strat], alpha=0.85)
         for bar, v in zip(bars, vals):
-            if not np.isnan(v):
+            if not np.isnan(v) and v > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2,
                         bar.get_height() + 0.5,
                         f"{v:.1f}%",

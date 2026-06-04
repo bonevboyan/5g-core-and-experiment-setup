@@ -113,13 +113,52 @@ def plot_visibility_heatmap(df: pd.DataFrame):
 # Figure 2: Grouped bar — fault_visibility_pct + fault_line_retention_pct
 # ---------------------------------------------------------------------------
 
+def _fault_bar_single(pivot: pd.DataFrame, present_scenarios: list,
+                      title: str, ylabel: str, filename: str):
+    """One grouped-bar chart for a single fault-retention metric."""
+    pivot = pivot.reindex(columns=STRATEGIES)
+    n_scen  = len(present_scenarios)
+    n_strat = len(STRATEGIES)
+    x       = np.arange(n_scen)
+    width   = 0.7 / n_strat
+
+    fig, ax = plt.subplots(figsize=FIGURE_SIZE_WIDE, dpi=FIGURE_DPI)
+
+    for i, strat in enumerate(STRATEGIES):
+        if strat not in pivot.columns:
+            continue
+        vals = [
+            float(pivot.loc[s, strat])
+            if s in pivot.index and not pd.isna(pivot.loc[s, strat])
+            else np.nan
+            for s in present_scenarios
+        ]
+        offset = (i - n_strat / 2 + 0.5) * width
+        ax.bar(x + offset, vals, width * 0.9,
+               label=STRATEGY_LABELS[strat],
+               color=PALETTE[strat], alpha=0.85)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
+                       fontsize=FONT_SIZE_TICK, rotation=20, ha="right")
+    ax.set_ylabel(ylabel, fontsize=FONT_SIZE_LABEL)
+    ax.set_title(f"RQ2c — {title} (fault scenarios)", fontsize=FONT_SIZE_TITLE)
+    ax.legend(fontsize=FONT_SIZE_LEGEND - 1)
+    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
+    ax.set_axisbelow(True)
+    ax.set_ylim(0, 115)
+
+    fig.tight_layout()
+    out = FIGURES_DIR / filename
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  [rq2c] Saved {out}")
+
+
 def plot_fault_visibility_bar(df: pd.DataFrame):
     fault_df = df[df["scenario"].isin(FAULT_SCENARIOS)].copy()
     if fault_df.empty:
         fault_df = df.copy()
-        title_note = "(all scenarios)"
-    else:
-        title_note = "(fault scenarios)"
 
     pivot_vis    = fault_df.pivot_table(index="scenario", columns="strategy",
                                         values="fault_visibility_pct", aggfunc="mean")
@@ -137,63 +176,19 @@ def plot_fault_visibility_bar(df: pd.DataFrame):
         print("  [rq2c] No data for fault visibility bar — skipping.")
         return
 
-    has_strict = not pivot_strict.dropna(how="all").empty
-    n_panels = 3 if has_strict else 2
-    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 4), dpi=FIGURE_DPI)
-    if n_panels == 2:
-        axes = list(axes)
-
-    panel_specs = [
-        (axes[0], pivot_vis,    "Fault template visibility",
-         "Fault template visibility (%)"),
-        (axes[1], pivot_line,   "Fault line retention (liberal: WARNING + keyword)",
-         "Fault line retention (liberal %)"),
-    ]
-    if has_strict:
-        panel_specs.append(
-            (axes[2], pivot_strict, "ERROR+ line retention",
-             "ERROR+ line retention (%)")
-        )
-
-    for ax, pivot, title, ylabel in panel_specs:
-        pivot = pivot.reindex(columns=STRATEGIES)
-        n_scen  = len(present_scenarios)
-        n_strat = len(STRATEGIES)
-        x       = np.arange(n_scen)
-        width   = 0.7 / n_strat
-
-        for i, strat in enumerate(STRATEGIES):
-            if strat not in pivot.columns:
-                continue
-            vals = [
-                float(pivot.loc[s, strat])
-                if s in pivot.index and not pd.isna(pivot.loc[s, strat])
-                else np.nan
-                for s in present_scenarios
-            ]
-            offset = (i - n_strat / 2 + 0.5) * width
-            ax.bar(x + offset, vals, width * 0.9,
-                   label=STRATEGY_LABELS[strat],
-                   color=PALETTE[strat], alpha=0.85)
-
-        ax.set_xticks(x)
-        ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in present_scenarios],
-                           fontsize=FONT_SIZE_TICK, rotation=20, ha="right")
-        ax.set_ylabel(ylabel, fontsize=FONT_SIZE_LABEL)
-        ax.set_title(
-            f"RQ2c — {title} {title_note}",
-            fontsize=FONT_SIZE_TITLE,
-        )
-        ax.legend(fontsize=FONT_SIZE_LEGEND - 1)
-        ax.yaxis.grid(True, linestyle="--", alpha=0.5)
-        ax.set_axisbelow(True)
-        ax.set_ylim(0, 115)
-
-    fig.tight_layout()
-    out = FIGURES_DIR / f"rq2c_fault_visibility_bar.{FIGURE_EXT}"
-    fig.savefig(out, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  [rq2c] Saved {out}")
+    _fault_bar_single(pivot_vis,    present_scenarios,
+                      "Fault template visibility",
+                      "Fault template visibility (%)",
+                      f"rq2c_fault_template_visibility.{FIGURE_EXT}")
+    _fault_bar_single(pivot_line,   present_scenarios,
+                      "Fault line retention (liberal: WARNING + keyword)",
+                      "Fault line retention (liberal %)",
+                      f"rq2c_fault_line_retention.{FIGURE_EXT}")
+    if not pivot_strict.dropna(how="all").empty:
+        _fault_bar_single(pivot_strict, present_scenarios,
+                          "ERROR+ line retention",
+                          "ERROR+ line retention (%)",
+                          f"rq2c_error_line_retention.{FIGURE_EXT}")
 
 
 # ---------------------------------------------------------------------------
@@ -301,18 +296,6 @@ def plot_novelty_retention(df: pd.DataFrame):
         bars   = ax.bar(x + offset, vals, width * 0.9,
                         label=STRATEGY_LABELS[strat],
                         color=PALETTE[strat], alpha=0.85)
-        for bar, v, cnt in zip(bars, vals, counts):
-            if np.isnan(v):
-                continue
-            if not np.isnan(cnt) and cnt > 0:
-                cnt_int = int(cnt)
-                cnt_str = f"{cnt_int//1000}k" if cnt_int >= 1000 else str(cnt_int)
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + 1.0,
-                        cnt_str,
-                        ha="center", va="bottom",
-                        fontsize=max(FONT_SIZE_TICK - 2, 6),
-                        color="#444444")
 
     ax.set_xticks(x)
     ax.set_xticklabels([SCENARIO_LABELS.get(s, s) for s in scenario_order],

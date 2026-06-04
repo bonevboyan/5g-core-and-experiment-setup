@@ -5,8 +5,8 @@ RQ2 trade-off analysis: visualise the tension between telemetry reduction,
 processing overhead, and retained system visibility.
 
 Three views:
-  1. Pareto scatter — reduction_pct vs fault_visibility_pct 
-  2. Overhead scatter — cpu_s vs reduction_pct 
+  1. Pareto scatter — reduction_pct vs fault_visibility_pct
+  2. Overhead scatter — cpu_s vs reduction_pct
   3. Summary heatmap — all key metrics per strategy
 
 Produces:
@@ -91,11 +91,10 @@ def plot_pareto_reduction_visibility(combined: pd.DataFrame):
         pts = df[df["strategy"] == strat]
         if pts.empty:
             continue
-        scatter_colors = [SCENARIO_PALETTE.get(s, "#888888") for s in pts["scenario"]]
         ax.scatter(pts[x_col], pts["fault_visibility_pct"],
-                   s=80, color=scatter_colors,
+                   s=80, color=PALETTE[strat],
                    marker=_marker(strat), label=STRATEGY_LABELS[strat],
-                   edgecolors=PALETTE[strat], linewidths=1.5, zorder=3)
+                   edgecolors="white", linewidths=0.8, zorder=3, alpha=0.85)
 
     means = df.groupby("strategy")[[x_col, "fault_visibility_pct"]].mean().reset_index()
     pareto = _pareto_front(means, x_col, "fault_visibility_pct")
@@ -126,10 +125,11 @@ def plot_pareto_reduction_visibility(combined: pd.DataFrame):
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
-    ax.annotate("", xy=(100, 100), xytext=(80, 80),
-                arrowprops=dict(arrowstyle="->", color="gray", lw=0.8))
-    ax.text(82, 79, "ideal\n(top-right)", fontsize=FONT_SIZE_TICK - 1,
-            color="gray", ha="left")
+    if not pareto.empty:
+        best = pareto.sort_values(x_col).iloc[-1]
+        ax.annotate("", xy=(best[x_col], best["fault_visibility_pct"]),
+                    xytext=(best[x_col] - 18, best["fault_visibility_pct"] - 15),
+                    arrowprops=dict(arrowstyle="->", color="gray", lw=1.2))
 
     fig.tight_layout()
     out = FIGURES_DIR / f"rq2d_pareto_reduction_visibility.{FIGURE_EXT}"
@@ -173,11 +173,6 @@ def plot_overhead_vs_reduction(metrics: pd.DataFrame):
                        s=80, color=PALETTE[strat],
                        marker=_marker(strat), label=STRATEGY_LABELS[strat],
                        alpha=0.85, zorder=3)
-            for _, row in pts.iterrows():
-                ax.annotate(SCENARIO_LABELS.get(row["scenario"], row["scenario"])[:8],
-                            (row[x_col], row[y_col]),
-                            textcoords="offset points", xytext=(3, 3),
-                            fontsize=FONT_SIZE_TICK - 2, alpha=0.7)
 
         ax.set_xlabel(xlabel, fontsize=FONT_SIZE_LABEL)
         ax.set_ylabel(ylabel, fontsize=FONT_SIZE_LABEL)
@@ -185,10 +180,8 @@ def plot_overhead_vs_reduction(metrics: pd.DataFrame):
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.set_axisbelow(True)
 
-    axes[0].set_title(
-        "RQ2d — CPU overhead vs. storage reduction",
-        fontsize=FONT_SIZE_TITLE,
-    )
+    axes[0].set_title("RQ2d — CPU overhead vs. storage reduction",
+        fontsize=FONT_SIZE_TITLE)
     axes[1].set_title("RQ2d — Memory overhead vs. storage reduction",
                       fontsize=FONT_SIZE_TITLE)
 
@@ -253,6 +246,7 @@ _FAULT_ONLY_VIS_COLS = {
     "fault_visibility_pct",
     "fault_line_retention_pct",
     "strict_fault_line_retention_pct",
+    "novelty_retention_pct",
 }
 
 
@@ -339,10 +333,10 @@ def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
                     vmin=0, vmax=1,
                     linewidths=0.5, ax=ax,
                     annot_kws={"size": FONT_SIZE_TICK - 1},
-                    cbar_kws={"label": "Normalised score (green = better)"})
+                    cbar_kws={})
     else:
         im = ax.imshow(color_matrix, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
-        plt.colorbar(im, ax=ax, label="Normalised score (green = better)")
+        plt.colorbar(im, ax=ax)
         ax.set_xticks(range(len(col_labels)))
         ax.set_yticks(range(len(row_labels)))
         ax.set_xticklabels(col_labels, fontsize=FONT_SIZE_TICK, rotation=30, ha="right")
@@ -354,10 +348,7 @@ def plot_summary_heatmap(metrics: pd.DataFrame, vis: pd.DataFrame):
                     ax.text(j, i, txt, ha="center", va="center",
                             fontsize=FONT_SIZE_TICK - 1)
 
-    ax.set_title(
-        "RQ2d — Strategy comparison (colour = normalised; green = better)",
-        fontsize=FONT_SIZE_TITLE,
-    )
+    ax.set_title("RQ2d — Strategy comparison", fontsize=FONT_SIZE_TITLE)
 
     fig.tight_layout()
     out = FIGURES_DIR / f"rq2d_summary_heatmap.{FIGURE_EXT}"
@@ -388,6 +379,11 @@ def save_tradeoff_table(metrics: pd.DataFrame, vis: pd.DataFrame):
             v_mean = v_mean.merge(v_fault, on="strategy", how="left")
 
         merged = m_mean.merge(v_mean, on="strategy", how="outer", suffixes=("", "_vis"))
+
+        mask = merged["strategy_label"].isna() & merged["strategy"].notna()
+        merged.loc[mask, "strategy_label"] = merged.loc[mask, "strategy"].map(
+            lambda s: STRATEGY_LABELS.get(s, s)
+        )
     else:
         merged = m_mean
 

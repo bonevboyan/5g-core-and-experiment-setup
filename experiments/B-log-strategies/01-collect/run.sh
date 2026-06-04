@@ -151,9 +151,14 @@ derive_fault_from_C() {
     echo "  -> $(wc -l < "$out_dir/all_logs.csv") lines in all_logs.csv"
 }
 
-derive_fault_from_C "fault-pod-crash-amf"      "03-pod-crash-amf"
-derive_fault_from_C "fault-memory-pressure-upf" "02-memory-pressure-upf"
-derive_fault_from_C "fault-network-delay-nrf"   "09-network-delay-nrf"
+derive_fault_from_C "fault-pod-crash-amf"             "03-pod-crash-amf"
+derive_fault_from_C "fault-memory-pressure-upf"       "02-memory-pressure-upf"
+derive_fault_from_C "fault-network-delay-nrf"          "09-network-delay-nrf"
+derive_fault_from_C "fault-network-partition-amf-scp"  "05-network-partition-amf-scp"
+derive_fault_from_C "fault-packet-loss-upf"            "06-packet-loss-upf"
+derive_fault_from_C "fault-upf-infra-packet-loss"      "14-upf-infrastructure-packet-loss"
+derive_fault_from_C "fault-nrf-cascade"                "15-nrf-cascade"
+derive_fault_from_C "fault-udm-pod-crash"              "19-udm-pod-crash"
 
 echo ""
 echo "============================================================"
