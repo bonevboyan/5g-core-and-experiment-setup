@@ -82,7 +82,7 @@ preflight() {
 
 preflight
 
-git -C "$SCRIPT_DIR" submodule update --init --recursive
+git -C "$SCRIPT_DIR" submodule update --init
 
 BASE="$DATA_DIR/B-log-strategies"
 INTER_PASS_SLEEP=120  

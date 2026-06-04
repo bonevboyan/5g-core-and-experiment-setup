@@ -73,6 +73,7 @@ _VAR_PATS = [
     re.compile(r'\b\d{2}/\d{2}\b'),        # date MM/DD
     re.compile(r'\d{2}:\d{2}:\d{2}\.\d+'), # time HH:MM:SS.mmm
     re.compile(r'\b\d+\b'),                # standalone integer
+    re.compile(r'\b[a-zA-Z]+\d+\b'),      # word+digit token (e.g. conn81, ue5)
 ]
 
 
